@@ -114,7 +114,7 @@ def write_workbook(manifest: dict, out_path: Path | str) -> None:
             [
                 d["id"],
                 d["kind"],
-                f"= {dup}" if dup else "",
+                f"same as {dup}" if dup else "",
                 d["location"],
                 _short(d["context"]),
                 opts_display,
