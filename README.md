@@ -25,20 +25,26 @@ python -m specgen manifest  "masters/23 64 10.SEC" -o out/manifest.json
 python -m specgen report    "masters/23 64 10.SEC" -o out/report.md
 python -m specgen validate  "masters/23 64 10.SEC"  [--schema path.xsd]
 python -m specgen answers   "masters/23 64 10.SEC" -o out/answers.xlsx
+python -m specgen html      "masters/23 64 10.SEC" -o out/decisions.html
 python -m specgen generate  "masters/23 64 10.SEC" \
-    --answers out/answers.xlsx -o out/generated/23_64_10.sec
+    --answers out/answers.xlsx -o out/generated/23_64_10.sec   # or .json
 ```
 
-## The answer-workbook workflow (no platform integration required)
+## The answer-file workflow (no platform integration required)
 
-1. `answers` emits an Excel workbook: one row per decision (dropdowns for
-   choices, keep/delete for optionals, free text for blanks) plus a Profile
-   sheet for tailoring options (keep/remove per project).
+1. Emit the decision surface: `html` builds a single-file interactive page
+   (open in any browser, no server; answers autosave locally; Export
+   downloads an answers JSON). `answers` builds the same thing as an Excel
+   workbook for engineers who prefer a spreadsheet. Both cover: choices,
+   blanks, optionals, duplicate propagation, and a Project Profile block
+   (tailoring keep/remove, plural [s] markers).
 2. An engineer — or, later, the Hedral platform — fills in the answers.
-3. `generate` applies them: resolves brackets, strips removed tailoring
-   blocks, and emits the tailored `.sec` plus `.redline.json` (full audit
-   trail) and `.unresolved.md` (decisions needing engineer input). Output is
-   verified (parse, round-trip, well-formed) before it is written; unanswered
+3. `generate` accepts either the .xlsx or the exported .json (they are
+   provably equivalent) and applies them: resolves brackets, strips removed
+   tailoring blocks, and emits the tailored `.sec` plus `.redline.md`
+   (human-readable change log), `.redline.json` (machine audit trail), and
+   `.unresolved.md` (decisions needing engineer input). Output is verified
+   (parse, round-trip, well-formed) before it is written; unanswered
    decisions are never defaulted. Structurally unsafe groups (bracket spans
    crossing markup unevenly) are flagged for manual editing, never touched.
 

@@ -185,6 +185,36 @@ def write_workbook(manifest: dict, out_path: Path | str) -> None:
     wb.save(str(out_path))
 
 
+def read_answers_json(path: Path | str) -> tuple[dict[str, str], dict[str, dict]]:
+    """Read an answers JSON (as exported by the HTML decision page or written
+    by the platform). Same return shape as read_workbook."""
+    import json
+
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    profile = {
+        k: str(v).strip().lower()
+        for k, v in (data.get("profile") or {}).items()
+        if str(v).strip().lower() in ("keep", "remove")
+    }
+    answers: dict[str, dict] = {}
+    for gid, v in (data.get("answers") or {}).items():
+        if isinstance(v, dict):
+            ans = str(v.get("answer", "")).strip()
+            notes = str(v.get("notes", "")).strip()
+        else:
+            ans, notes = str(v).strip(), ""
+        if ans or notes:
+            answers[str(gid).strip()] = {"answer": ans, "notes": notes}
+    return profile, answers
+
+
+def read_answers(path: Path | str) -> tuple[dict[str, str], dict[str, dict]]:
+    """Dispatch on file type: .json or .xlsx."""
+    if str(path).lower().endswith(".json"):
+        return read_answers_json(path)
+    return read_workbook(path)
+
+
 def read_workbook(path: Path | str) -> tuple[dict[str, str], dict[str, dict]]:
     """Return (profile, answers). answers[id] = {"answer": str, "notes": str}."""
     wb = load_workbook(str(path), data_only=True)

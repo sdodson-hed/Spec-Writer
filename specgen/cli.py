@@ -156,12 +156,27 @@ def cmd_answers(args) -> int:
 
 
 def cmd_generate(args) -> int:
-    from .answers import read_workbook
+    from .answers import read_answers
     from .generate import generate
 
-    profile, ans = read_workbook(args.answers)
+    profile, ans = read_answers(args.answers)
     summary = generate(args.file, profile, ans, args.out)
     print(json.dumps(summary, indent=2))
+    return 0
+
+
+def cmd_html(args) -> int:
+    from .htmlpage import write_html
+
+    sec = secfile.parse(args.file)
+    m = build_manifest(sec)
+    out = args.out or (Path(args.file).stem + ".decisions.html")
+    write_html(m, out)
+    uniq = len(
+        [d for d in m["decisions"]
+         if not d["in_note"] and not d.get("plural") and not d.get("duplicate_of")]
+    )
+    print(f"Wrote {out} ({uniq} unique decisions)")
     return 0
 
 
@@ -175,10 +190,11 @@ def main(argv=None) -> int:
         ("validate", cmd_validate),
         ("answers", cmd_answers),
         ("generate", cmd_generate),
+        ("html", cmd_html),
     ]:
         sp = sub.add_parser(name)
         sp.add_argument("file")
-        if name in ("manifest", "report", "answers"):
+        if name in ("manifest", "report", "answers", "html"):
             sp.add_argument("-o", "--out")
         if name == "validate":
             sp.add_argument("--schema")
