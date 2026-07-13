@@ -4,6 +4,8 @@ and generate the tailored section.
 
 This plays the role the Hedral platform (or the partner firm's engineer)
 will play: producing answers. Everything downstream is the real pipeline.
+Duplicate decisions are answered once (propagation handles the rest);
+plural [s] markers are answered once on the Profile sheet.
 """
 
 import json
@@ -14,6 +16,7 @@ from openpyxl import load_workbook
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+from specgen.answers import PLURAL_KEY  # noqa: E402
 
 MANIFEST = ROOT / "out" / "23 64 10.manifest.json"
 WORKBOOK = ROOT / "out" / "23 64 10.answers.xlsx"
@@ -29,8 +32,8 @@ def match(d, *needles):
 
 
 for d in m["decisions"]:
-    if d["in_note"]:
-        continue
+    if d["in_note"] or d.get("plural") or d.get("duplicate_of"):
+        continue  # duplicates auto-follow the first instance
     gid, kind, opts = d["id"], d["kind"], d["options"]
     if kind == "choice" and match(d, "air-cooled condenser coil", "water-cooled"):
         answers[gid] = "1"  # air-cooled machine
@@ -46,28 +49,42 @@ for d in m["decisions"]:
         answers[gid] = "1"  # low ambient limit 40 degF
     elif kind == "choice" and match(d, "heat recovery condenser", "receiver"):
         answers[gid] = "delete"  # no heat recovery / receiver / economizer
-    elif kind == "optional" and opts[0].strip().lower() == "s":
-        answers[gid] = "keep"  # two chillers on the project: plural stays
 
-print(f"Answering {len(answers)} of "
-      f"{sum(1 for d in m['decisions'] if not d['in_note'])} decisions")
+print(f"Answering {len(answers)} unique decisions "
+      f"(duplicates and plural [s] handled by propagation/profile)")
 
 wb = load_workbook(str(WORKBOOK))
 ws = wb["Answers"]
+head = {str(c.value).strip().lower(): i for i, c in enumerate(ws[1], 1) if c.value}
 hit = 0
 for row in ws.iter_rows(min_row=2):
-    gid = row[0].value
+    gid = row[head["id"] - 1].value
     if gid in answers:
-        row[5].value = answers[gid]
-        row[6].value = "Maxwell AFB demo: from chiller schedule / system alternative"
+        row[head["answer"] - 1].value = answers[gid]
+        row[head["notes"] - 1].value = "Maxwell demo: from chiller schedule"
         hit += 1
 assert hit == len(answers), (hit, len(answers))
 
 ps = wb["Profile"]
-profile = {"ARMY": "remove", "NAVY": "remove", "AIR FORCE,NAVY": "keep"}
+profile = {
+    "ARMY": "remove",
+    "NAVY": "remove",
+    "AIR FORCE,NAVY": "keep",
+    PLURAL_KEY: "keep",  # two chillers on the project
+}
 for row in ps.iter_rows(min_row=2):
     if row[0].value in profile:
         row[3].value = profile[row[0].value]
 
-wb.save(str(FILLED))
-print(f"Wrote {FILLED.name}")
+target = FILLED
+try:
+    wb.save(str(target))
+except PermissionError:  # workbook open in Excel — write a versioned copy
+    for n in range(2, 20):
+        target = FILLED.with_name(f"{FILLED.stem}-v{n}{FILLED.suffix}")
+        try:
+            wb.save(str(target))
+            break
+        except PermissionError:
+            continue
+print(f"Wrote {target.name}")

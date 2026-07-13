@@ -37,7 +37,8 @@ class Group:
     options: list[Option]
     src_start: int  # raw-source span including the outer brackets
     src_end: int
-    char_start: int  # position in the tag-free text stream (for context)
+    char_start: int  # span in the tag-free text stream (for context)
+    char_end: int = -1
     safe: bool = True  # tag-balanced: group and options can be spliced safely
 
 
@@ -159,6 +160,7 @@ def scan_groups(src: str) -> tuple[list[Group], str, list[int]]:
                     src_start=g_start,
                     src_end=g_end,
                     char_start=group_char_start,
+                    char_end=end,
                     safe=safe,
                 )
             )
@@ -167,7 +169,48 @@ def scan_groups(src: str) -> tuple[list[Group], str, list[int]]:
     return groups, text, offs
 
 
-def context_excerpt(text: str, char_start: int, length: int, margin: int = 100) -> str:
+def is_plural(group: Group) -> bool:
+    """Trivial plural marker like Chiller[s] — one project-level decision."""
+    return (
+        len(group.options) == 1
+        and group.options[0].text.strip().lower() in ("s", "es", "ies")
+    )
+
+
+def duplicate_map(groups: list[Group]) -> dict[str, str]:
+    """Map gid -> gid of the first group with identical kind+options.
+    Only meaningful decisions participate (multi-option, or optional text of
+    substance) — the same design datum answers every instance."""
+    first: dict[tuple, str] = {}
+    dups: dict[str, str] = {}
+    for g in groups:
+        if is_plural(g):
+            continue
+        texts = tuple(_WS_RE.sub(" ", o.text).strip().lower() for o in g.options)
+        if len(texts) < 2 and (g.kind != "optional" or len(texts[0]) < 4):
+            continue
+        key = (g.kind, texts)
+        if key in first:
+            dups[g.gid] = first[key]
+        else:
+            first[key] = g.gid
+    return dups
+
+
+def context_excerpt(
+    text: str, char_start: int, char_end: int, margin: int = 90
+) -> str:
+    """Excerpt with the decision span marked »like this«, trimmed to word
+    boundaries so it reads as a sentence fragment, not a random slice."""
     lo = max(0, char_start - margin)
-    hi = min(len(text), char_start + length + margin)
-    return _WS_RE.sub(" ", text[lo:hi]).strip()
+    hi = min(len(text), char_end + margin)
+    before = _WS_RE.sub(" ", text[lo:char_start]).lstrip()
+    inside = _WS_RE.sub(" ", text[char_start:char_end]).strip()
+    after = _WS_RE.sub(" ", text[char_end:hi]).rstrip()
+    if lo > 0 and before and not before[0].isspace():
+        cut = before.find(" ")
+        before = before[cut + 1 :] if 0 <= cut < len(before) - 1 else before
+    if hi < len(text) and after:
+        cut = after.rfind(" ")
+        after = after[:cut] if cut > 0 else after
+    return f"…{before}»{inside}«{after}…"

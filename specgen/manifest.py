@@ -19,11 +19,30 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from .scan import context_excerpt, scan_groups
+from .scan import context_excerpt, duplicate_map, is_plural, scan_groups
 from .secfile import Element, SecFile
 
 _SD_GROUP_RE = re.compile(r"^SD-\d+")
 _WS_RE = re.compile(r"\s+")
+
+_HINTS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"G,?\s*»?\["), "Submittal reviewer code (G = Govt-approved; add office, e.g. G, AE)"),
+    (re.compile(r"degrees\s*[CF]", re.I), "Temperature — fill both the SI and imperial instances consistently"),
+    (re.compile(r"\b(GPM|L/s)\b", re.I), "Flow rate from equipment schedule"),
+    (re.compile(r"\bpercent\b", re.I), "Percentage value"),
+    (re.compile(r"\b(weeks?|days?|hours?)\b", re.I), "Duration / lead time"),
+    (re.compile(r"\bcopies\b", re.I), "Number of copies"),
+    (re.compile(r"\bSD-\d\d", re.I), "Submittal list item — keep only if this equipment applies"),
+]
+
+
+def _hint(kind: str, context: str) -> str:
+    if kind not in ("blank", "optional"):
+        return ""
+    for pat, hint in _HINTS:
+        if pat.search(context):
+            return hint
+    return ""
 
 
 def _title_of(el: Element) -> str:
@@ -83,9 +102,11 @@ def build_manifest(sec: SecFile) -> dict:
     umrl = re.search(r"UMRL dated ([A-Za-z]+ \d{4})", header_text)
     rev = re.search(r"UFGS-[\d .]+\(([^)]+)\)", header_text)
 
+    dups = duplicate_map(groups)
     decisions = []
     for g in groups:
         in_note = any(s <= g.src_start < e for s, e in notes)
+        context = context_excerpt(stream, g.char_start, g.char_end)
         decisions.append(
             {
                 "id": g.gid,
@@ -94,9 +115,10 @@ def build_manifest(sec: SecFile) -> dict:
                 "location": _locate(locs, g.src_start),
                 "in_note": in_note,
                 "safe": g.safe,
-                "context": context_excerpt(
-                    stream, g.char_start, g.src_end - g.src_start
-                ),
+                "plural": is_plural(g),
+                "duplicate_of": dups.get(g.gid),
+                "hint": _hint(g.kind, context),
+                "context": context,
                 "offset": g.src_start,
             }
         )

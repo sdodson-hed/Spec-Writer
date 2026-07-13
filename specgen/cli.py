@@ -146,8 +146,12 @@ def cmd_answers(args) -> int:
     m = build_manifest(sec)
     out = args.out or (Path(args.file).stem + ".answers.xlsx")
     write_workbook(m, out)
-    n = len([d for d in m["decisions"] if not d["in_note"]])
-    print(f"Wrote {out} ({n} decisions, {len(m['tailoring_options'])} tailoring options)")
+    ds = [d for d in m["decisions"] if not d["in_note"] and not d.get("plural")]
+    uniq = len([d for d in ds if not d.get("duplicate_of")])
+    print(
+        f"Wrote {out} ({len(ds)} rows, {uniq} unique decisions, "
+        f"{len(m['tailoring_options'])} tailoring options)"
+    )
     return 0
 
 

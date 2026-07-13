@@ -19,7 +19,8 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from . import secfile
-from .scan import scan_groups
+from .answers import PLURAL_KEY
+from .scan import duplicate_map, is_plural, scan_groups
 
 _WS_RE = re.compile(r"\s+")
 
@@ -70,11 +71,24 @@ def generate(
     if unknown:
         raise GenerateError(f"answer IDs not in section: {unknown}")
 
+    dups = duplicate_map(groups)
+    plural_action = profile.get(PLURAL_KEY, "")
+
     redline: list[dict] = []
     unresolved: list[dict] = []
 
     for g in sorted(groups, key=lambda g: -g.src_start):
         entry = answers.get(g.gid, {})
+        propagated = ""
+        if not entry.get("answer") and g.gid in dups and dups[g.gid] in answers:
+            entry = answers[dups[g.gid]]
+            propagated = dups[g.gid]
+        if not entry.get("answer") and is_plural(g) and plural_action:
+            entry = {
+                "answer": "keep" if plural_action == "keep" else "delete",
+                "notes": "",
+            }
+            propagated = PLURAL_KEY
         ans = entry.get("answer", "")
         notes = entry.get("notes", "")
         before = src[g.src_start : g.src_end]
@@ -121,6 +135,8 @@ def generate(
                 after = ans  # custom / fill-in text (plain text, no markup)
                 action = "filled custom value" if g.kind == "blank" else "custom text"
         src = src[: g.src_start] + after + src[g.src_end :]
+        if propagated:
+            action += f" (propagated from {propagated})"
         redline.append(
             {
                 "id": g.gid,

@@ -1,20 +1,24 @@
 """Answer workbook: the engineer-facing interface to a section's decisions.
 
 `write_workbook` turns a manifest into an .xlsx with:
-  - "Answers" sheet: one row per bracket decision, dropdowns where practical
-  - "Profile" sheet: tailoring options with keep/remove dropdowns
+  - "Answers" sheet: one row per UNIQUE decision. Plural markers ([s]) are
+    excluded (answered once on the Profile sheet); duplicate decisions are
+    listed but auto-follow the first instance unless answered explicitly.
+  - "Profile" sheet: tailoring options + project-wide settings (keep/remove)
   - "ReadMe" sheet: how to fill it in
 
-`read_workbook` loads the answers back:
-  - profile: {tailoring option name: "keep" | "remove"}
-  - answers: {decision id: raw cell string}
+`read_workbook` loads the answers back (header-based, robust to column
+reordering):
+  - profile: {option or setting name: "keep" | "remove"}
+  - answers: {decision id: {"answer": str, "notes": str}}
 
 Answer cell semantics (case-insensitive keywords):
   choice   -> option number ("2"), several numbers ("1,3"), exact option
               text, "delete" (remove the whole group), or custom text
   blank    -> the value to fill in (custom text)
   optional -> "keep" (keep text, drop brackets), "delete", or custom text
-  (empty)  -> decision left unresolved; reported for engineer review
+  (empty)  -> unresolved (flagged for review), unless the row duplicates an
+              answered decision, in which case that answer propagates
 """
 
 from __future__ import annotations
@@ -26,8 +30,12 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
+# Special Profile-sheet key: resolves every plural [s] marker in one answer.
+PLURAL_KEY = "PLURAL MARKERS [s]"
+
 _HEADER_FILL = PatternFill("solid", fgColor="1F4E79")
 _HEADER_FONT = Font(color="FFFFFF", bold=True)
+_DUP_FONT = Font(color="808080", italic=True)
 _KIND_FILL = {
     "choice": PatternFill("solid", fgColor="FFF2CC"),
     "blank": PatternFill("solid", fgColor="D9EAD3"),
@@ -36,7 +44,9 @@ _KIND_FILL = {
 
 README = """HOW TO FILL IN THIS WORKBOOK
 
-Answers sheet - one row per decision in the spec section:
+Answers sheet - one row per decision in the spec section. The Context
+column shows the surrounding sentence with the decision marked >>like this<<.
+
   choice rows   : pick an option from the dropdown, or type the option
                   number (e.g. 2), several numbers to keep more than one
                   item (e.g. 1,3), the word delete to remove the whole
@@ -44,21 +54,24 @@ Answers sheet - one row per decision in the spec section:
   blank rows    : type the value that goes in the blank (e.g. 198).
   optional rows : keep (keep the text), delete (remove it), or type
                   replacement text.
+
+  Rows marked "= BRK-xxxx" are the same decision appearing again later in
+  the section; they automatically follow the answer you give the first
+  instance. Only fill them if this instance should differ.
+
   Leave a row empty if you cannot decide - it will be flagged for review
   and left bracketed in the draft, never silently defaulted.
 
-Profile sheet - project-wide tailoring options:
-  keep    : the blocks for this option stay in the section.
-  remove  : all blocks for this option are removed (e.g. remove ARMY and
-            NAVY on an Air Force project).
-
-The Context column shows the sentence around each decision. The Location
-column shows the paragraph. Notes are for your own comments; they are
-copied into the audit log.
+Profile sheet - project-wide settings:
+  Tailoring options : keep or remove all blocks for that option
+                      (e.g. remove ARMY and NAVY on an Air Force project).
+  PLURAL MARKERS [s]: keep = plural wording (multiple units, "Chillers"),
+                      remove = singular ("Chiller"). One answer covers
+                      every [s] in the section.
 """
 
 
-def _short(text: str, limit: int = 180) -> str:
+def _short(text: str, limit: int = 220) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
@@ -68,14 +81,14 @@ def write_workbook(manifest: dict, out_path: Path | str) -> None:
     # --- Answers sheet ---
     ws = wb.active
     ws.title = "Answers"
-    headers = ["ID", "Kind", "Location", "Context", "Options", "Answer", "Notes"]
+    headers = ["ID", "Kind", "Same as", "Location", "Context", "Options", "Hint",
+               "Answer", "Notes"]
     ws.append(headers)
     for col, _h in enumerate(headers, 1):
         c = ws.cell(row=1, column=col)
         c.fill = _HEADER_FILL
         c.font = _HEADER_FONT
-    widths = [10, 9, 42, 60, 46, 26, 24]
-    for col, w in enumerate(widths, 1):
+    for col, w in enumerate([10, 9, 10, 34, 64, 42, 30, 24, 22], 1):
         ws.column_dimensions[get_column_letter(col)].width = w
 
     keep_del = DataValidation(
@@ -85,25 +98,40 @@ def write_workbook(manifest: dict, out_path: Path | str) -> None:
 
     row = 2
     for d in manifest["decisions"]:
-        if d["in_note"]:
-            continue  # notes drop out on publish; no decision needed
+        if d["in_note"] or d.get("plural"):
+            continue
         opts = d["options"]
-        opts_display = " | ".join(
-            f"{i}) {_short(o, 60)}" for i, o in enumerate(opts, 1)
-        )
         if d["kind"] == "blank":
             opts_display = "(fill in a value)"
         elif d["kind"] == "optional":
-            opts_display = f"optional: {_short(opts[0], 80)}"
+            opts_display = f"optional text: {_short(opts[0], 90)}"
+        else:
+            opts_display = "  |  ".join(
+                f"{i}) {_short(o, 55)}" for i, o in enumerate(opts, 1)
+            )
+        dup = d.get("duplicate_of") or ""
         ws.append(
-            [d["id"], d["kind"], d["location"], _short(d["context"]), opts_display, "", ""]
+            [
+                d["id"],
+                d["kind"],
+                f"= {dup}" if dup else "",
+                d["location"],
+                _short(d["context"]),
+                opts_display,
+                d.get("hint", ""),
+                "",
+                "",
+            ]
         )
-        for col in (1, 2, 3, 4, 5):
+        for col in range(1, 8):
             ws.cell(row=row, column=col).alignment = Alignment(
                 wrap_text=True, vertical="top"
             )
         ws.cell(row=row, column=2).fill = _KIND_FILL[d["kind"]]
-        answer_cell = ws.cell(row=row, column=6)
+        if dup:
+            for col in (1, 3, 5, 6):
+                ws.cell(row=row, column=col).font = _DUP_FONT
+        answer_cell = ws.cell(row=row, column=8)
         answer_cell.alignment = Alignment(wrap_text=True, vertical="top")
         if d["kind"] == "optional":
             keep_del.add(answer_cell)
@@ -122,10 +150,11 @@ def write_workbook(manifest: dict, out_path: Path | str) -> None:
                 dv.add(answer_cell)
         row += 1
     ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:I{row - 1}"
 
     # --- Profile sheet ---
     ps = wb.create_sheet("Profile")
-    ps.append(["Tailoring Option", "Blocks", "Chars", "Action"])
+    ps.append(["Setting", "Blocks", "Chars", "Action"])
     for col in range(1, 5):
         c = ps.cell(row=1, column=col)
         c.fill = _HEADER_FILL
@@ -141,6 +170,10 @@ def write_workbook(manifest: dict, out_path: Path | str) -> None:
         ps.append([opt, v["blocks"], v["chars"], ""])
         action_dv.add(ps.cell(row=prow, column=4))
         prow += 1
+    n_plural = sum(1 for d in manifest["decisions"] if d.get("plural"))
+    if n_plural:
+        ps.append([PLURAL_KEY, n_plural, "", ""])
+        action_dv.add(ps.cell(row=prow, column=4))
     ps.freeze_panes = "A2"
 
     # --- ReadMe sheet ---
@@ -155,22 +188,31 @@ def write_workbook(manifest: dict, out_path: Path | str) -> None:
 def read_workbook(path: Path | str) -> tuple[dict[str, str], dict[str, dict]]:
     """Return (profile, answers). answers[id] = {"answer": str, "notes": str}."""
     wb = load_workbook(str(path), data_only=True)
-    answers: dict[str, dict] = {}
     ws = wb["Answers"]
+    head = {str(c.value).strip().lower(): i for i, c in enumerate(ws[1]) if c.value}
+    id_i, ans_i = head["id"], head["answer"]
+    notes_i = head.get("notes")
+    answers: dict[str, dict] = {}
     for row in ws.iter_rows(min_row=2, values_only=True):
-        if not row or not row[0]:
+        if not row or not row[id_i]:
             continue
-        gid = str(row[0]).strip()
-        ans = "" if row[5] is None else str(row[5]).strip()
-        notes = "" if len(row) < 7 or row[6] is None else str(row[6]).strip()
+        gid = str(row[id_i]).strip()
+        ans = "" if row[ans_i] is None else str(row[ans_i]).strip()
+        notes = ""
+        if notes_i is not None and len(row) > notes_i and row[notes_i] is not None:
+            notes = str(row[notes_i]).strip()
         if ans or notes:
             answers[gid] = {"answer": ans, "notes": notes}
     profile: dict[str, str] = {}
     if "Profile" in wb.sheetnames:
-        for row in wb["Profile"].iter_rows(min_row=2, values_only=True):
-            if not row or not row[0]:
+        ps = wb["Profile"]
+        phead = {str(c.value).strip().lower(): i for i, c in enumerate(ps[1]) if c.value}
+        key_i = phead.get("setting", phead.get("tailoring option", 0))
+        act_i = phead.get("action", 3)
+        for row in ps.iter_rows(min_row=2, values_only=True):
+            if not row or not row[key_i]:
                 continue
-            action = "" if len(row) < 4 or row[3] is None else str(row[3]).strip().lower()
+            action = "" if len(row) <= act_i or row[act_i] is None else str(row[act_i]).strip().lower()
             if action in ("keep", "remove"):
-                profile[str(row[0]).strip()] = action
+                profile[str(row[key_i]).strip()] = action
     return profile, answers
