@@ -215,6 +215,46 @@ def generate(
         json.dumps({"summary": summary, "changes": redline}, indent=2),
         encoding="utf-8",
     )
+
+    def _plain(raw: str, limit: int = 300) -> str:
+        txt = _WS_RE.sub(" ", re.sub(r"<[^>]+>", " ", raw)).strip()
+        return (txt[: limit - 1] + "…") if len(txt) > limit else (txt or "(nothing)")
+
+    md = [
+        f"# Redline — {out_sec.name}",
+        "",
+        f"{summary['resolved']} decisions applied, "
+        f"{summary['tailoring_blocks_removed']} tailoring blocks removed, "
+        f"{summary['unresolved']} left for engineer review.",
+        "",
+    ]
+    plural = [
+        c for c in redline if PLURAL_KEY in c["action"] and c["kind"] != "tailoring"
+    ]
+    brk = [
+        c
+        for c in redline
+        if c["kind"] != "tailoring" and PLURAL_KEY not in c["action"]
+    ]
+    tai = [c for c in redline if c["kind"] == "tailoring"]
+    if plural:
+        verb = "kept (plural)" if plural[0]["answer"] == "keep" else "made singular"
+        md += [f"_{len(plural)} plural [s] markers {verb} — profile setting._", ""]
+    for c in sorted(brk, key=lambda c: c["id"]):
+        md += [
+            f"## {c['id']} — {c['action']}",
+            "",
+            f"- **Was:** {_plain(c['before'])}",
+            f"- **Now:** {_plain(c['after'])}",
+        ]
+        if c.get("notes"):
+            md.append(f"- Note: {c['notes']}")
+        md.append("")
+    if tai:
+        md += ["## Tailoring blocks removed", ""]
+        for c in tai:
+            md.append(f"- {c['answer']}: {_plain(c['before'], 120)}")
+    out_sec.with_suffix(".redline.md").write_text("\n".join(md), encoding="utf-8")
     unresolved_md = [
         f"# Unresolved decisions — {out_sec.name}",
         "",
