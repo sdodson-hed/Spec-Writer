@@ -1,0 +1,8 @@
+# generated artifacts, reports, and backups — regenerate with specgen
+out/
+# schema drop-point (copy specsintactSEC.xsd here when obtained)
+schema/
+__pycache__/
+*.pyc
+.claude/
+*.tmp
