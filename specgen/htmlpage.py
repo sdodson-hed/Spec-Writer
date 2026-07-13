@@ -102,6 +102,23 @@ footer.actions { position: fixed; bottom: 0; left: 0; right: 0; background: var(
   border-top: 1px solid var(--line); padding: 10px 22px; display: flex; gap: 10px;
   justify-content: center; }
 .hide { display: none !important; }
+.viewlink { font-size: 12px; color: var(--accent); cursor: pointer; margin-left: auto; }
+#drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(760px, 94vw);
+  background: var(--card); border-left: 1px solid var(--line); z-index: 20;
+  transform: translateX(102%); transition: transform .22s ease; display: flex;
+  flex-direction: column; box-shadow: -12px 0 32px rgba(0,0,0,.18); }
+#drawer.open { transform: none; }
+#drawer .dhead { display: flex; align-items: center; gap: 10px; padding: 12px 18px;
+  border-bottom: 1px solid var(--line); }
+#drawer .dhead h2 { font-size: 14px; margin: 0; flex: 1; }
+#drawerBody { overflow-y: auto; padding: 16px 22px 40px; white-space: pre-wrap;
+  font-size: 13.5px; line-height: 1.7; }
+#drawerBody mark { background: var(--mark); color: var(--mark-ink); padding: 0 3px;
+  border-radius: 4px; font-weight: 600; cursor: pointer; scroll-margin: 30vh; }
+#drawerBody mark.flash { outline: 2px solid var(--accent); }
+#scrim { position: fixed; inset: 0; background: rgba(0,0,0,.28); z-index: 15; }
+.dec { scroll-margin: 90px; }
+.dec.flash { outline: 2px solid var(--accent); }
 </style>
 </head>
 <body>
@@ -130,9 +147,16 @@ footer.actions { position: fixed; bottom: 0; left: 0; right: 0; background: var(
 <footer class="actions">
   <button class="primary" id="btnExport">Export answers (JSON)</button>
   <button id="btnImport">Import answers</button>
+  <button id="btnFullText">Full section text</button>
   <button id="btnClear">Clear all</button>
   <input type="file" id="fileImport" accept=".json" class="hide">
 </footer>
+<div id="scrim" class="hide"></div>
+<aside id="drawer" aria-label="Full section text">
+  <div class="dhead"><h2>Full section text — decisions highlighted; click one
+    to jump to its card</h2><button id="drawerClose">Close</button></div>
+  <div id="drawerBody"></div>
+</aside>
 <script>
 const DATA = __DATA__;
 const PLURAL_KEY = __PLURAL_KEY__;
@@ -184,26 +208,28 @@ function decCard(d) {
     `<span class="chip kind-${d.kind}">${d.kind}</span>`;
   if (!d.safe) top += `<span class="chip warn">manual edit needed</span>`;
   if (d.duplicate_of) top += `<span class="chip">same as ${d.duplicate_of}</span>`;
-  top += `</div>`;
+  top += `<span class="viewlink" data-view>view in section →</span></div>`;
   let body = top;
   if (d.hint) body += `<div class="hint">${esc(d.hint)}</div>`;
   body += `<div class="ctx">${ctxHtml(d.context)}</div>`;
   if (!d.safe) {
     body += `<div class="dupnote">This bracket crosses structural markup; resolve it
       in the SpecsIntact editor. It is always listed in the unresolved report.</div>`;
-    div.innerHTML = body; return div;
+    div.innerHTML = body; wireView(div, d); return div;
   }
   if (d.duplicate_of && !(state.answers[d.id] && state.answers[d.id].answer)) {
     const srcTxt = e.a ? `following its answer: <b>${esc(e.a)}</b>` : "unanswered so far";
     body += `<div class="dupnote">Same decision as ${d.duplicate_of} — ${srcTxt}.
       <a data-act="override">Answer this instance differently…</a></div>`;
     div.innerHTML = body;
+    wireView(div, d);
     div.querySelector("[data-act=override]").onclick = () => {
       div.replaceWith(fullCard(d)); };
     return div;
   }
   div.innerHTML = body + controlsHtml(d, e);
   wire(div, d);
+  wireView(div, d);
   return div;
 }
 function fullCard(d) {
@@ -212,10 +238,69 @@ function fullCard(d) {
   div.className = "card dec" + (e.a ? " answered" : "");
   div.dataset.id = d.id;
   let top = `<div class="top"><span class="chip">${d.id}</span>` +
-    `<span class="chip kind-${d.kind}">${d.kind}</span></div>`;
+    `<span class="chip kind-${d.kind}">${d.kind}</span>` +
+    `<span class="viewlink" data-view>view in section →</span></div>`;
   div.innerHTML = top + `<div class="ctx">${ctxHtml(d.context)}</div>` + controlsHtml(d, e);
   wire(div, d);
+  wireView(div, d);
   return div;
+}
+function wireView(div, d) {
+  const v = div.querySelector("[data-view]");
+  if (v) v.onclick = () => openDrawer(d.id);
+}
+
+// ---- full-text drawer ----
+let drawerBuilt = false;
+function buildDrawer() {
+  if (drawerBuilt) return;
+  drawerBuilt = true;
+  const marks = ds.slice().sort((a, b) => a.char_start - b.char_start);
+  let html = "", pos = 0;
+  for (const d of marks) {
+    if (d.char_start < pos) continue;
+    html += esc(DATA.text.slice(pos, d.char_start));
+    html += `<mark data-id="${d.id}" id="ft-${d.id}">` +
+      esc(DATA.text.slice(d.char_start, d.char_end)) + `</mark>`;
+    pos = d.char_end;
+  }
+  html += esc(DATA.text.slice(pos));
+  const body = document.getElementById("drawerBody");
+  body.innerHTML = html;
+  body.querySelectorAll("mark").forEach(m => m.onclick = () => {
+    closeDrawer();
+    const id = m.dataset.id;
+    let card = document.querySelector(`.dec[data-id="${CSS.escape(id)}"]`);
+    if (!card) {  // hidden by the current filter — show everything, re-render
+      filter = "all";
+      document.querySelectorAll(".tabs button").forEach(x =>
+        x.classList.toggle("on", x.dataset.f === "all"));
+      renderAll();
+      card = document.querySelector(`.dec[data-id="${CSS.escape(id)}"]`);
+    }
+    if (card) {
+      card.scrollIntoView({ block: "center" });
+      card.classList.add("flash");
+      setTimeout(() => card.classList.remove("flash"), 1600);
+    }
+  });
+}
+function openDrawer(focusId) {
+  buildDrawer();
+  document.getElementById("scrim").classList.remove("hide");
+  document.getElementById("drawer").classList.add("open");
+  if (focusId) {
+    const m = document.getElementById("ft-" + focusId);
+    if (m) {
+      m.scrollIntoView({ block: "center" });
+      m.classList.add("flash");
+      setTimeout(() => m.classList.remove("flash"), 1600);
+    }
+  }
+}
+function closeDrawer() {
+  document.getElementById("scrim").classList.add("hide");
+  document.getElementById("drawer").classList.remove("open");
 }
 function controlsHtml(d, e) {
   const own = state.answers[d.id] || {};
@@ -349,6 +434,10 @@ document.getElementById("btnClear").onclick = () => {
     state = { profile: {}, answers: {} }; save(); renderAll();
   }
 };
+document.getElementById("btnFullText").onclick = () => openDrawer(null);
+document.getElementById("drawerClose").onclick = closeDrawer;
+document.getElementById("scrim").onclick = closeDrawer;
+document.addEventListener("keydown", ev => { if (ev.key === "Escape") closeDrawer(); });
 
 document.getElementById("hTitle").textContent = DATA.section + " — " + DATA.title;
 document.getElementById("hSub").textContent =

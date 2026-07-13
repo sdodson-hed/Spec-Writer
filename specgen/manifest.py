@@ -120,6 +120,8 @@ def build_manifest(sec: SecFile) -> dict:
                 "hint": _hint(g.kind, context),
                 "context": context,
                 "offset": g.src_start,
+                "char_start": g.char_start,
+                "char_end": g.char_end,
             }
         )
 
@@ -214,4 +216,7 @@ def build_manifest(sec: SecFile) -> dict:
         "submittals": submittal_items,
         "references": declared,
         "body_submittal_tag_uses": body_sub_uses,
+        # full tag-free text of the section; char_start/char_end above index
+        # into this, so a UI can show every decision in situ
+        "text": stream,
     }
