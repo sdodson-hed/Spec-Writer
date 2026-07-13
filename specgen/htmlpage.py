@@ -189,7 +189,7 @@ function resolvedText(d, a) {
   if (a === "delete") return null;
   if (a === "keep") return d.options[0];
   if (d.kind === "choice" && /^\d+(,\d+)*$/.test(a))
-    return a.split(",").map(n => d.options[+n - 1] ?? "?").join(" ");
+    return a.split(",").map(n => d.options[+n - 1] ?? "?").join(d.multi ? "\n" : " ");
   return a;
 }
 function setAnswer(id, val) {
@@ -293,10 +293,20 @@ function renderPanel() {
     return;
   }
   const own = state.answers[d.id] || {};
-  if (d.kind === "choice") {
+  if (d.kind === "choice" && d.multi) {
+    const picked = new Set(/^\d+(,\d+)*$/.test(e.a) ? e.a.split(",") : []);
+    h += `<div class="hint">Select all that apply — these are independent items,
+      keep any combination.</div>`;
+    h += `<div class="opts">` + d.options.map((o, i) =>
+      `<button data-multi="${i + 1}" class="${picked.has(String(i + 1)) ? "on" : ""}">` +
+      `${picked.has(String(i + 1)) ? "☑" : "☐"} ${esc(o)}${nestedTag(o)}</button>`).join("") +
+      `<button data-val="delete" class="danger ${e.a === "delete" ? "on" : ""}">none of these — remove all</button></div>`;
+    h += freeform(d, e, "…or type replacement text");
+  } else if (d.kind === "choice") {
+    h += `<div class="hint">Choose one.</div>`;
     h += `<div class="opts">` + d.options.map((o, i) =>
       `<button data-val="${i + 1}" class="${e.a == String(i + 1) ? "on" : ""}">` +
-      `${i + 1}) ${esc(o)}</button>`).join("") +
+      `${i + 1}) ${esc(o)}${nestedTag(o)}</button>`).join("") +
       `<button data-val="delete" class="danger ${e.a === "delete" ? "on" : ""}">remove entirely</button></div>`;
     h += freeform(d, e, "…or type replacement text");
   } else if (d.kind === "optional") {
@@ -311,8 +321,22 @@ function renderPanel() {
         placeholder="note for the audit log (optional)" value="${esc(own.notes || "")}"></div>`;
   h += navRow();
   p.innerHTML = h;
-  p.querySelectorAll(".opts button").forEach(b =>
+  p.querySelectorAll(".opts button[data-val]").forEach(b =>
     b.onclick = () => setAnswer(d.id, b.dataset.val));
+  p.querySelectorAll(".opts button[data-multi]").forEach(b =>
+    b.onclick = () => {
+      const cur = eff(d).a;
+      const picked = new Set(/^\d+(,\d+)*$/.test(cur) ? cur.split(",") : []);
+      const v = b.dataset.multi;
+      picked.has(v) ? picked.delete(v) : picked.add(v);
+      const val = [...picked].map(Number).sort((a, b2) => a - b2).join(",");
+      // setAnswer toggles off when unchanged; force-set instead
+      const rec = state.answers[d.id] || {};
+      if (val) rec.answer = val; else delete rec.answer;
+      if (rec.answer || rec.notes) state.answers[d.id] = rec;
+      else delete state.answers[d.id];
+      save(); refresh();
+    });
   const inp = p.querySelector("[data-custom]");
   const btn = p.querySelector("[data-act=apply]");
   if (btn) btn.onclick = () => { if (inp.value.trim()) setAnswer(d.id, inp.value.trim()); };
@@ -321,6 +345,11 @@ function renderPanel() {
   const notes = p.querySelector("[data-notes]");
   if (notes) notes.onchange = () => setNotes(d.id, notes.value.trim());
   wireNav(p);
+}
+function nestedTag(o) {
+  return o.includes("[") ?
+    ` <span style="color:var(--choice);font-size:11px;font-weight:700">
+      ⚠ contains further choices — they return as follow-up decisions</span>` : "";
 }
 function freeform(d, e, ph) {
   const custom = e.a && !["keep", "delete"].includes(e.a) &&

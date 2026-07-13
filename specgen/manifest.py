@@ -103,10 +103,17 @@ def build_manifest(sec: SecFile) -> dict:
     rev = re.search(r"UFGS-[\d .]+\(([^)]+)\)", header_text)
 
     dups = duplicate_map(groups)
+    _BLOCK_TAGS = ("<OLI", "<ITM", "<LST", "<TXT", "<SPT")
     decisions = []
     for g in groups:
         in_note = any(s <= g.src_start < e for s, e in notes)
         context = context_excerpt(stream, g.char_start, g.char_end)
+        # options that are whole list items / blocks are independent includes
+        # (select any subset); inline text alternatives are choose-one
+        multi = g.kind == "choice" and all(
+            any(t in sec.source[o.src_start : o.src_end] for t in _BLOCK_TAGS)
+            for o in g.options
+        )
         decisions.append(
             {
                 "id": g.gid,
@@ -115,6 +122,7 @@ def build_manifest(sec: SecFile) -> dict:
                 "location": _locate(locs, g.src_start),
                 "in_note": in_note,
                 "safe": g.safe,
+                "multi": multi,
                 "plural": is_plural(g),
                 "duplicate_of": dups.get(g.gid),
                 "hint": _hint(g.kind, context),

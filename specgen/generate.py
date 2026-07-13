@@ -20,7 +20,7 @@ from pathlib import Path
 
 from . import secfile
 from .answers import PLURAL_KEY
-from .scan import duplicate_map, is_plural, scan_groups
+from .scan import context_excerpt, duplicate_map, is_plural, scan_groups
 
 _WS_RE = re.compile(r"\s+")
 
@@ -34,7 +34,7 @@ def _match_option(groups_options: list, ans: str) -> list[int] | None:
     Returns list of 0-based option indices, or None if not an option ref."""
     parts = [p.strip() for p in ans.split(",") if p.strip()]
     if parts and all(p.isdigit() for p in parts):
-        idx = [int(p) - 1 for p in parts]
+        idx = sorted({int(p) - 1 for p in parts})  # document order, deduped
         if all(0 <= i < len(groups_options) for i in idx):
             return idx
         raise GenerateError(f"option number out of range: {ans!r}")
@@ -100,7 +100,6 @@ def generate(
                     "id": g.gid,
                     "kind": g.kind,
                     "options": [o.text for o in g.options],
-                    "context": _WS_RE.sub(" ", before)[:160],
                 }
             )
             continue
@@ -111,7 +110,6 @@ def generate(
                     "id": g.gid,
                     "kind": g.kind,
                     "options": [o.text for o in g.options],
-                    "context": _WS_RE.sub(" ", before)[:160],
                     "note": "answer given but group spans markup unevenly; "
                     "needs manual edit in SI Editor",
                 }
@@ -190,6 +188,38 @@ def generate(
                 removed_tai += 1
         tmp.unlink(missing_ok=True)
 
+    # --- rescan the OUTPUT: the unresolved report is defined by what
+    # actually remains bracketed, so choices that carried nested brackets
+    # (e.g. picking a paragraph that itself contains [copper][aluminum])
+    # surface as new open decisions instead of slipping through ---
+    def _sig(opts: list[str]) -> tuple:
+        return tuple(_WS_RE.sub(" ", o).strip() for o in opts)
+
+    pool: dict[tuple, list[dict]] = {}
+    for u in unresolved:
+        pool.setdefault(_sig(u["options"]), []).append(u)
+    final_groups, final_stream, _ = scan_groups(src)
+    unresolved = []
+    for fg in final_groups:
+        opts = [o.text for o in fg.options]
+        bucket = pool.get(_sig(opts))
+        origin = bucket.pop(0) if bucket else None
+        entry = {
+            "id": origin["id"] if origin else f"OPEN@{fg.src_start}",
+            "kind": fg.kind,
+            "options": opts,
+            "context": context_excerpt(final_stream, fg.char_start, fg.char_end),
+        }
+        if origin and origin.get("note"):
+            entry["note"] = origin["note"]
+        if origin is None:
+            entry["note"] = (
+                "not one of the original decision IDs — it was nested inside "
+                "a resolved choice or reshaped by neighboring edits; answer "
+                "in a follow-up pass or in SI Editor"
+            )
+        unresolved.append(entry)
+
     # --- verify before writing ---
     out_sec = Path(out_sec)
     out_sec.parent.mkdir(parents=True, exist_ok=True)
@@ -264,7 +294,10 @@ def generate(
     for u in unresolved:
         opts = " | ".join(u["options"]) if u["kind"] != "blank" else "(fill in)"
         unresolved_md += [f"## {u['id']} · {u['kind']}", f"- Options: {opts}",
-                          f"- Context: …{u['context']}…", ""]
+                          f"- Context: {u['context']}"]
+        if u.get("note"):
+            unresolved_md.append(f"- **Note:** {u['note']}")
+        unresolved_md.append("")
     out_sec.with_suffix(".unresolved.md").write_text(
         "\n".join(unresolved_md), encoding="utf-8"
     )
