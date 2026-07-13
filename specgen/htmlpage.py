@@ -1,15 +1,17 @@
-"""Single-file interactive HTML decision page.
+"""Single-file interactive HTML decision page — document-first layout.
 
-`write_html(manifest, out_path)` renders the decision manifest as a
-self-contained HTML file: no server, no dependencies, works from disk or
-email. The engineer clicks through decisions grouped by spec article,
-answers autosave to the browser's localStorage, and Export downloads an
-answers JSON that `specgen generate --answers x.json` consumes directly.
+`write_html(manifest, out_path)` renders the section's FULL TEXT as the main
+view with every decision highlighted in place. Clicking a highlight opens
+that decision's controls in the right-hand panel; answering updates the text
+live (the chosen option replaces the bracketed alternatives), so the
+engineer watches the spec resolve as they work.
 
-Semantics mirror the Excel workbook: choices pick options (or custom text
-or delete), blanks take a value, optionals keep/delete, duplicates follow
-the first instance unless overridden, plurals and tailoring are answered
-once in the Project Profile block.
+No server, no dependencies; answers autosave to localStorage; Export
+downloads an answers JSON that `specgen generate --answers x.json` consumes.
+Semantics mirror the Excel workbook: choices pick options (or custom text or
+delete), blanks take a value, optionals keep/delete, duplicates follow the
+first instance unless overridden, plurals and tailoring are answered once in
+the Project Profile block.
 """
 
 from __future__ import annotations
@@ -27,98 +29,107 @@ _TEMPLATE = r"""<!doctype html>
 <title>__TITLE__</title>
 <style>
 :root {
-  --bg: #f5f6f8; --card: #ffffff; --ink: #1a2330; --muted: #64748b;
+  --bg: #eef0f4; --card: #ffffff; --ink: #1a2330; --muted: #64748b;
   --line: #e2e8f0; --accent: #1f4e79; --accent-ink: #ffffff;
   --choice: #b45309; --blank: #15803d; --optional: #9d174d;
-  --mark: #fef3c7; --mark-ink: #78350f; --done: #f0fdf4; --done-line: #86efac;
+  --todo: #fef3c7; --todo-ink: #78350f; --todo-line: #f5d878;
+  --done: #dcfce7; --done-ink: #14532d; --done-line: #86efac;
+  --del: #fee2e2; --del-ink: #7f1d1d;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0f1520; --card: #1a2330; --ink: #e6edf6; --muted: #8b9bb0;
+    --bg: #0c1118; --card: #161e2a; --ink: #e6edf6; --muted: #8b9bb0;
     --line: #2c3a4f; --accent: #6ea8d8; --accent-ink: #0f1520;
     --choice: #f0a860; --blank: #7fd49a; --optional: #f28cb4;
-    --mark: #4a3a12; --mark-ink: #fbd77e; --done: #12271a; --done-line: #245a38;
+    --todo: #453510; --todo-ink: #fbd77e; --todo-line: #6b5518;
+    --done: #143323; --done-ink: #a7e8c0; --done-line: #245a38;
+    --del: #451717; --del-ink: #f5b5b5;
   }
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--ink);
   font: 15px/1.55 -apple-system, "Segoe UI", system-ui, sans-serif; }
-header { position: sticky; top: 0; z-index: 5; background: var(--card);
-  border-bottom: 1px solid var(--line); padding: 14px 22px;
+header { position: sticky; top: 0; z-index: 10; background: var(--card);
+  border-bottom: 1px solid var(--line); padding: 12px 22px;
   display: flex; flex-wrap: wrap; gap: 14px; align-items: center; }
-header h1 { font-size: 17px; margin: 0; }
-header .sub { color: var(--muted); font-size: 13px; }
-.progress { flex: 1; min-width: 220px; display: flex; align-items: center; gap: 10px; }
+header h1 { font-size: 16px; margin: 0; }
+header .sub { color: var(--muted); font-size: 12.5px; }
+.progress { flex: 1; min-width: 200px; display: flex; align-items: center; gap: 10px; }
 .bar { flex: 1; height: 8px; background: var(--line); border-radius: 99px; overflow: hidden; }
 .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .25s; }
-.count { font-size: 13px; color: var(--muted); white-space: nowrap; }
-button, .btn { font: inherit; border: 1px solid var(--line); background: var(--card);
+.count { font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+button { font: inherit; border: 1px solid var(--line); background: var(--card);
   color: var(--ink); border-radius: 8px; padding: 6px 12px; cursor: pointer; }
 button:hover { border-color: var(--accent); }
 button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
-main { max-width: 980px; margin: 0 auto; padding: 20px 22px 80px; }
-.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
-  padding: 16px 18px; margin-bottom: 14px; }
-.profile h2 { margin: 0 0 4px; font-size: 15px; }
-.profile p { margin: 0 0 12px; color: var(--muted); font-size: 13px; }
-.profile .row { display: flex; align-items: center; gap: 10px; padding: 6px 0;
-  border-top: 1px solid var(--line); }
-.profile .row:first-of-type { border-top: none; }
-.profile .name { flex: 1; font-weight: 600; font-size: 14px; }
-.profile .meta { color: var(--muted); font-size: 12px; margin-right: 8px; }
-.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
-.seg button { border: none; border-radius: 0; padding: 5px 14px; background: transparent; }
-.seg button.on { background: var(--accent); color: var(--accent-ink); }
-.tabs { display: flex; gap: 8px; margin: 18px 0 12px; }
-.tabs button.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
-h3.art { font-size: 13px; text-transform: uppercase; letter-spacing: .04em;
-  color: var(--muted); margin: 26px 0 10px; }
-.dec { border-left: 4px solid var(--line); }
-.dec.answered { background: var(--done); border-color: var(--done-line); }
-.dec .top { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+
+#layout { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 18px;
+  max-width: 1400px; margin: 0 auto; padding: 18px 22px 70px; }
+@media (max-width: 900px) { #layout { grid-template-columns: 1fr; }
+  #side { position: static !important; max-height: none !important; } }
+
+#doc { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+  padding: 26px 30px; white-space: pre-wrap; font-size: 13.5px; line-height: 1.75;
+  overflow-wrap: break-word; }
+#doc mark { padding: 0 3px; border-radius: 4px; cursor: pointer; font-weight: 600;
+  scroll-margin: 25vh; border: 1px solid transparent; }
+#doc mark.todo { background: var(--todo); color: var(--todo-ink);
+  border-color: var(--todo-line); }
+#doc mark.answered { background: var(--done); color: var(--done-ink);
+  border-color: var(--done-line); }
+#doc mark.deleted { background: var(--del); color: var(--del-ink);
+  font-size: 11px; padding: 0 5px; text-decoration: none; }
+#doc mark.unsafe { outline: 1px dashed #b91c1c; }
+#doc mark.active { outline: 2px solid var(--accent); }
+
+#side { position: sticky; top: 74px; align-self: start;
+  max-height: calc(100vh - 96px); overflow-y: auto; display: flex;
+  flex-direction: column; gap: 12px; }
+.panel { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+  padding: 14px 16px; }
+.panel h2 { font-size: 13px; margin: 0 0 8px; text-transform: uppercase;
+  letter-spacing: .04em; color: var(--muted); }
 .chip { font-size: 11px; font-weight: 700; letter-spacing: .03em; padding: 2px 8px;
   border-radius: 99px; border: 1px solid var(--line); color: var(--muted); }
 .chip.kind-choice { color: var(--choice); border-color: currentColor; }
 .chip.kind-blank { color: var(--blank); border-color: currentColor; }
 .chip.kind-optional { color: var(--optional); border-color: currentColor; }
 .chip.warn { color: #b91c1c; border-color: currentColor; }
-.hint { font-size: 13px; color: var(--muted); font-style: italic; margin: 2px 0 8px; }
-.ctx { font-size: 14px; color: var(--ink); margin: 4px 0 12px; }
-.ctx mark { background: var(--mark); color: var(--mark-ink); padding: 1px 4px;
-  border-radius: 4px; font-weight: 600; }
-.opts { display: flex; flex-wrap: wrap; gap: 8px; }
-.opts button { max-width: 100%; text-align: left; }
+.dec-top { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+.loc { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+.hint { font-size: 12.5px; color: var(--muted); font-style: italic; margin-bottom: 8px; }
+.opts { display: flex; flex-direction: column; gap: 6px; }
+.opts button { text-align: left; line-height: 1.4; }
 .opts button.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .opts button.danger.on { background: #b91c1c; border-color: #b91c1c; color: #fff; }
-.freeform { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
-.freeform input[type=text] { flex: 1; min-width: 200px; font: inherit; padding: 6px 10px;
+.freeform { display: flex; gap: 6px; margin-top: 8px; }
+.freeform input { flex: 1; min-width: 0; font: inherit; font-size: 13.5px; padding: 6px 10px;
   border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); }
-.dupnote { font-size: 13px; color: var(--muted); }
-.dupnote a { color: var(--accent); cursor: pointer; }
-.notes-row { margin-top: 10px; }
-.notes-row input { width: 100%; font: inherit; font-size: 13px; padding: 5px 10px;
+.notes-row { margin-top: 8px; }
+.notes-row input { width: 100%; font: inherit; font-size: 12.5px; padding: 5px 10px;
   border: 1px dashed var(--line); border-radius: 8px; background: transparent; color: var(--ink); }
+.dupnote { font-size: 12.5px; color: var(--muted); margin-bottom: 8px; }
+.dupnote a { color: var(--accent); cursor: pointer; }
+.navrow { display: flex; gap: 6px; margin-top: 10px; }
+.navrow button { flex: 1; font-size: 12.5px; }
+.muted { color: var(--muted); font-size: 13px; }
+
+.profile .row { display: flex; align-items: center; gap: 8px; padding: 5px 0;
+  border-top: 1px solid var(--line); }
+.profile .row:first-of-type { border-top: none; }
+.profile .name { flex: 1; font-weight: 600; font-size: 12.5px; }
+.profile .meta { color: var(--muted); font-size: 11px; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { border: none; border-radius: 0; padding: 4px 10px; font-size: 12px;
+  background: transparent; }
+.seg button.on { background: var(--accent); color: var(--accent-ink); }
+details.profile summary { cursor: pointer; font-size: 13px; font-weight: 600;
+  color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+
 footer.actions { position: fixed; bottom: 0; left: 0; right: 0; background: var(--card);
-  border-top: 1px solid var(--line); padding: 10px 22px; display: flex; gap: 10px;
-  justify-content: center; }
+  border-top: 1px solid var(--line); padding: 9px 22px; display: flex; gap: 10px;
+  justify-content: center; z-index: 10; }
 .hide { display: none !important; }
-.viewlink { font-size: 12px; color: var(--accent); cursor: pointer; margin-left: auto; }
-#drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(760px, 94vw);
-  background: var(--card); border-left: 1px solid var(--line); z-index: 20;
-  transform: translateX(102%); transition: transform .22s ease; display: flex;
-  flex-direction: column; box-shadow: -12px 0 32px rgba(0,0,0,.18); }
-#drawer.open { transform: none; }
-#drawer .dhead { display: flex; align-items: center; gap: 10px; padding: 12px 18px;
-  border-bottom: 1px solid var(--line); }
-#drawer .dhead h2 { font-size: 14px; margin: 0; flex: 1; }
-#drawerBody { overflow-y: auto; padding: 16px 22px 40px; white-space: pre-wrap;
-  font-size: 13.5px; line-height: 1.7; }
-#drawerBody mark { background: var(--mark); color: var(--mark-ink); padding: 0 3px;
-  border-radius: 4px; font-weight: 600; cursor: pointer; scroll-margin: 30vh; }
-#drawerBody mark.flash { outline: 2px solid var(--accent); }
-#scrim { position: fixed; inset: 0; background: rgba(0,0,0,.28); z-index: 15; }
-.dec { scroll-margin: 90px; }
-.dec.flash { outline: 2px solid var(--accent); }
 </style>
 </head>
 <body>
@@ -129,43 +140,38 @@ footer.actions { position: fixed; bottom: 0; left: 0; right: 0; background: var(
   </div>
   <div class="progress"><div class="bar"><i id="pBar"></i></div>
     <span class="count" id="pCount"></span></div>
+  <button id="btnNext" class="primary">Next unanswered ↓</button>
 </header>
-<main>
-  <section class="card profile" id="profileCard">
-    <h2>Project profile — answer once, applies everywhere</h2>
-    <p>Tailoring options control whole blocks of the section. Keep what applies
-       to this project; remove what does not.</p>
-    <div id="profileRows"></div>
-  </section>
-  <div class="tabs">
-    <button data-f="todo" class="on">To answer</button>
-    <button data-f="done">Answered</button>
-    <button data-f="all">All</button>
-  </div>
-  <div id="decisions"></div>
-</main>
+<div id="layout">
+  <div id="doc"></div>
+  <aside id="side">
+    <details class="panel profile" id="profilePanel" open>
+      <summary>Project profile — answer once</summary>
+      <div id="profileRows" style="margin-top:8px"></div>
+    </details>
+    <div class="panel" id="decPanel">
+      <div class="muted">Click any highlighted decision in the text to answer it
+      here. Yellow = to answer, green = answered.</div>
+    </div>
+  </aside>
+</div>
 <footer class="actions">
   <button class="primary" id="btnExport">Export answers (JSON)</button>
   <button id="btnImport">Import answers</button>
-  <button id="btnFullText">Full section text</button>
   <button id="btnClear">Clear all</button>
   <input type="file" id="fileImport" accept=".json" class="hide">
 </footer>
-<div id="scrim" class="hide"></div>
-<aside id="drawer" aria-label="Full section text">
-  <div class="dhead"><h2>Full section text — decisions highlighted; click one
-    to jump to its card</h2><button id="drawerClose">Close</button></div>
-  <div id="drawerBody"></div>
-</aside>
 <script>
 const DATA = __DATA__;
 const PLURAL_KEY = __PLURAL_KEY__;
 const KEY = "specgen:" + DATA.section + ":" + (DATA.revision || "");
 let state = { profile: {}, answers: {} };
 try { state = Object.assign(state, JSON.parse(localStorage.getItem(KEY) || "{}")); } catch (e) {}
-let filter = "todo";
+let activeId = null;
+let overrideIds = new Set();
 
 const ds = DATA.decisions.filter(d => !d.in_note && !d.plural);
+const byId = Object.fromEntries(ds.map(d => [d.id, d]));
 const nPlural = DATA.decisions.filter(d => d.plural).length;
 const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const save = () => localStorage.setItem(KEY, JSON.stringify(state));
@@ -179,11 +185,18 @@ function eff(d) {
   }
   return { a: "", from: null };
 }
+function resolvedText(d, a) {
+  if (a === "delete") return null;
+  if (a === "keep") return d.options[0];
+  if (d.kind === "choice" && /^\d+(,\d+)*$/.test(a))
+    return a.split(",").map(n => d.options[+n - 1] ?? "?").join(" ");
+  return a;
+}
 function setAnswer(id, val) {
   const cur = state.answers[id] || {};
   if (cur.answer === val) delete cur.answer; else cur.answer = val;
   if (cur.answer || cur.notes) state.answers[id] = cur; else delete state.answers[id];
-  save(); renderAll();
+  save(); refresh();
 }
 function setNotes(id, val) {
   const cur = state.answers[id] || {};
@@ -192,119 +205,94 @@ function setNotes(id, val) {
   save(); updateProgress();
 }
 
-function ctxHtml(c) {
-  const m = c.match(/^(.*)»(.*)«(.*)$/s);
-  if (!m) return esc(c);
-  return esc(m[1]) + "<mark>" + esc(m[2]) + "</mark>" + esc(m[3]);
-}
-
-function decCard(d) {
-  const e = eff(d);
-  const answered = !!e.a;
-  const div = document.createElement("article");
-  div.className = "card dec" + (answered ? " answered" : "");
-  div.dataset.id = d.id;
-  let top = `<div class="top"><span class="chip">${d.id}</span>` +
-    `<span class="chip kind-${d.kind}">${d.kind}</span>`;
-  if (!d.safe) top += `<span class="chip warn">manual edit needed</span>`;
-  if (d.duplicate_of) top += `<span class="chip">same as ${d.duplicate_of}</span>`;
-  top += `<span class="viewlink" data-view>view in section →</span></div>`;
-  let body = top;
-  if (d.hint) body += `<div class="hint">${esc(d.hint)}</div>`;
-  body += `<div class="ctx">${ctxHtml(d.context)}</div>`;
-  if (!d.safe) {
-    body += `<div class="dupnote">This bracket crosses structural markup; resolve it
-      in the SpecsIntact editor. It is always listed in the unresolved report.</div>`;
-    div.innerHTML = body; wireView(div, d); return div;
-  }
-  if (d.duplicate_of && !(state.answers[d.id] && state.answers[d.id].answer)) {
-    const srcTxt = e.a ? `following its answer: <b>${esc(e.a)}</b>` : "unanswered so far";
-    body += `<div class="dupnote">Same decision as ${d.duplicate_of} — ${srcTxt}.
-      <a data-act="override">Answer this instance differently…</a></div>`;
-    div.innerHTML = body;
-    wireView(div, d);
-    div.querySelector("[data-act=override]").onclick = () => {
-      div.replaceWith(fullCard(d)); };
-    return div;
-  }
-  div.innerHTML = body + controlsHtml(d, e);
-  wire(div, d);
-  wireView(div, d);
-  return div;
-}
-function fullCard(d) {
-  const e = eff(d);
-  const div = document.createElement("article");
-  div.className = "card dec" + (e.a ? " answered" : "");
-  div.dataset.id = d.id;
-  let top = `<div class="top"><span class="chip">${d.id}</span>` +
-    `<span class="chip kind-${d.kind}">${d.kind}</span>` +
-    `<span class="viewlink" data-view>view in section →</span></div>`;
-  div.innerHTML = top + `<div class="ctx">${ctxHtml(d.context)}</div>` + controlsHtml(d, e);
-  wire(div, d);
-  wireView(div, d);
-  return div;
-}
-function wireView(div, d) {
-  const v = div.querySelector("[data-view]");
-  if (v) v.onclick = () => openDrawer(d.id);
-}
-
-// ---- full-text drawer ----
-let drawerBuilt = false;
-function buildDrawer() {
-  if (drawerBuilt) return;
-  drawerBuilt = true;
+// ---- document view ----
+function buildDoc() {
+  const doc = document.getElementById("doc");
   const marks = ds.slice().sort((a, b) => a.char_start - b.char_start);
   let html = "", pos = 0;
   for (const d of marks) {
     if (d.char_start < pos) continue;
     html += esc(DATA.text.slice(pos, d.char_start));
-    html += `<mark data-id="${d.id}" id="ft-${d.id}">` +
-      esc(DATA.text.slice(d.char_start, d.char_end)) + `</mark>`;
+    html += `<mark data-id="${d.id}" id="mk-${d.id}"></mark>`;
     pos = d.char_end;
   }
   html += esc(DATA.text.slice(pos));
-  const body = document.getElementById("drawerBody");
-  body.innerHTML = html;
-  body.querySelectorAll("mark").forEach(m => m.onclick = () => {
-    closeDrawer();
-    const id = m.dataset.id;
-    let card = document.querySelector(`.dec[data-id="${CSS.escape(id)}"]`);
-    if (!card) {  // hidden by the current filter — show everything, re-render
-      filter = "all";
-      document.querySelectorAll(".tabs button").forEach(x =>
-        x.classList.toggle("on", x.dataset.f === "all"));
-      renderAll();
-      card = document.querySelector(`.dec[data-id="${CSS.escape(id)}"]`);
-    }
-    if (card) {
-      card.scrollIntoView({ block: "center" });
-      card.classList.add("flash");
-      setTimeout(() => card.classList.remove("flash"), 1600);
-    }
-  });
+  doc.innerHTML = html;
+  doc.querySelectorAll("mark").forEach(m => m.onclick = () => select(m.dataset.id, false));
+  ds.forEach(updateMark);
 }
-function openDrawer(focusId) {
-  buildDrawer();
-  document.getElementById("scrim").classList.remove("hide");
-  document.getElementById("drawer").classList.add("open");
-  if (focusId) {
-    const m = document.getElementById("ft-" + focusId);
-    if (m) {
-      m.scrollIntoView({ block: "center" });
-      m.classList.add("flash");
-      setTimeout(() => m.classList.remove("flash"), 1600);
+function updateMark(d) {
+  const m = document.getElementById("mk-" + d.id);
+  if (!m) return;
+  const e = eff(d);
+  const cls = [];
+  if (!d.safe) cls.push("unsafe");
+  if (d.id === activeId) cls.push("active");
+  if (!e.a) {
+    cls.push("todo");
+    m.textContent = DATA.text.slice(d.char_start, d.char_end);
+    m.title = "click to answer";
+  } else {
+    const txt = resolvedText(d, e.a);
+    if (txt === null) {
+      cls.push("deleted");
+      m.textContent = "deleted"; m.title = "removed — click to change";
+    } else {
+      cls.push("answered");
+      m.textContent = txt; m.title = "answered — click to change";
     }
   }
+  m.className = cls.join(" ");
 }
-function closeDrawer() {
-  document.getElementById("scrim").classList.add("hide");
-  document.getElementById("drawer").classList.remove("open");
+
+// ---- side panel ----
+function select(id, scrollDoc) {
+  const prev = activeId;
+  activeId = id;
+  if (prev && byId[prev]) updateMark(byId[prev]);
+  const d = byId[id];
+  if (d) updateMark(d);
+  renderPanel();
+  if (scrollDoc && d) {
+    const m = document.getElementById("mk-" + id);
+    if (m) m.scrollIntoView({ block: "center", behavior: "smooth" });
+  }
 }
-function controlsHtml(d, e) {
+function renderPanel() {
+  const p = document.getElementById("decPanel");
+  const d = byId[activeId];
+  if (!d) {
+    p.innerHTML = `<div class="muted">Click any highlighted decision in the text
+      to answer it here. Yellow = to answer, green = answered.</div>`;
+    return;
+  }
+  const e = eff(d);
+  let h = `<div class="dec-top"><span class="chip">${d.id}</span>
+    <span class="chip kind-${d.kind}">${d.kind}</span>`;
+  if (!d.safe) h += `<span class="chip warn">manual edit needed</span>`;
+  h += `</div><div class="loc">${esc(d.location)}</div>`;
+  if (d.hint) h += `<div class="hint">${esc(d.hint)}</div>`;
+  if (!d.safe) {
+    h += `<div class="dupnote">This bracket crosses structural markup and must be
+      resolved in the SpecsIntact editor; it is always listed in the unresolved
+      report.</div>` + navRow();
+    p.innerHTML = h; wireNav(p); return;
+  }
+  const overridden = state.answers[d.id] && state.answers[d.id].answer;
+  if (d.duplicate_of && !overridden && !overrideIds.has(d.id)) {
+    const srcTxt = e.a ? `following its answer: <b>${esc(e.a)}</b>` : "unanswered so far";
+    h += `<div class="dupnote">Same decision as <a data-goto="${d.duplicate_of}">
+      ${d.duplicate_of}</a> — ${srcTxt}.<br>
+      <a data-act="override">Answer this instance differently…</a></div>` + navRow();
+    p.innerHTML = h;
+    p.querySelector("[data-act=override]").onclick = () => {
+      overrideIds.add(d.id); renderPanel(); };
+    const g = p.querySelector("[data-goto]");
+    if (g) g.onclick = () => select(g.dataset.goto, true);
+    wireNav(p);
+    return;
+  }
   const own = state.answers[d.id] || {};
-  let h = "";
   if (d.kind === "choice") {
     h += `<div class="opts">` + d.options.map((o, i) =>
       `<button data-val="${i + 1}" class="${e.a == String(i + 1) ? "on" : ""}">` +
@@ -312,42 +300,68 @@ function controlsHtml(d, e) {
       `<button data-val="delete" class="danger ${e.a === "delete" ? "on" : ""}">remove entirely</button></div>`;
     h += freeform(d, e, "…or type replacement text");
   } else if (d.kind === "optional") {
-    h += `<div class="opts">` +
-      `<button data-val="keep" class="${e.a === "keep" ? "on" : ""}">keep</button>` +
-      `<button data-val="delete" class="danger ${e.a === "delete" ? "on" : ""}">delete</button></div>`;
+    h += `<div class="opts">
+      <button data-val="keep" class="${e.a === "keep" ? "on" : ""}">keep this text</button>
+      <button data-val="delete" class="danger ${e.a === "delete" ? "on" : ""}">delete it</button></div>`;
     h += freeform(d, e, "…or type replacement text");
   } else {
-    h += freeform(d, e, "value to fill in", true);
+    h += freeform(d, e, "value to fill in");
   }
-  h += `<div class="notes-row"><input data-notes placeholder="note for the audit log (optional)"
-        value="${esc(own.notes || "")}"></div>`;
-  return h;
-}
-function freeform(d, e, ph, isBlank) {
-  const custom = e.a && !["keep", "delete"].includes(e.a) &&
-    !(d.kind === "choice" && /^\d+(,\d+)*$/.test(e.a)) ? e.a : "";
-  return `<div class="freeform"><input type="text" data-custom placeholder="${ph}"
-    value="${esc(custom)}"><button data-act="apply">${isBlank ? "Set" : "Use text"}</button></div>`;
-}
-function wire(div, d) {
-  div.querySelectorAll(".opts button").forEach(b =>
+  h += `<div class="notes-row"><input data-notes
+        placeholder="note for the audit log (optional)" value="${esc(own.notes || "")}"></div>`;
+  h += navRow();
+  p.innerHTML = h;
+  p.querySelectorAll(".opts button").forEach(b =>
     b.onclick = () => setAnswer(d.id, b.dataset.val));
-  const inp = div.querySelector("[data-custom]");
-  const btn = div.querySelector("[data-act=apply]");
+  const inp = p.querySelector("[data-custom]");
+  const btn = p.querySelector("[data-act=apply]");
   if (btn) btn.onclick = () => { if (inp.value.trim()) setAnswer(d.id, inp.value.trim()); };
   if (inp) inp.onkeydown = ev => { if (ev.key === "Enter" && inp.value.trim())
     setAnswer(d.id, inp.value.trim()); };
-  const notes = div.querySelector("[data-notes]");
+  const notes = p.querySelector("[data-notes]");
   if (notes) notes.onchange = () => setNotes(d.id, notes.value.trim());
+  wireNav(p);
+}
+function freeform(d, e, ph) {
+  const custom = e.a && !["keep", "delete"].includes(e.a) &&
+    !(d.kind === "choice" && /^\d+(,\d+)*$/.test(e.a)) ? e.a : "";
+  return `<div class="freeform"><input type="text" data-custom placeholder="${ph}"
+    value="${esc(custom)}"><button data-act="apply">Set</button></div>`;
+}
+function navRow() {
+  return `<div class="navrow"><button data-nav="prev">← previous</button>
+    <button data-nav="next">next unanswered →</button></div>`;
+}
+function wireNav(p) {
+  p.querySelectorAll("[data-nav]").forEach(b => b.onclick = () => {
+    if (b.dataset.nav === "next") gotoNextUnanswered();
+    else gotoPrev();
+  });
+}
+function gotoNextUnanswered() {
+  const start = activeId ? ds.findIndex(d => d.id === activeId) : -1;
+  for (let i = 1; i <= ds.length; i++) {
+    const d = ds[(start + i + ds.length) % ds.length];
+    if (d.safe && !eff(d).a && !d.duplicate_of) { select(d.id, true); return; }
+  }
+  for (let i = 1; i <= ds.length; i++) {  // fall back to any unanswered
+    const d = ds[(start + i + ds.length) % ds.length];
+    if (d.safe && !eff(d).a) { select(d.id, true); return; }
+  }
+}
+function gotoPrev() {
+  const i = ds.findIndex(d => d.id === activeId);
+  if (i > 0) select(ds[i - 1].id, true);
 }
 
+// ---- profile ----
 function renderProfile() {
   const rows = document.getElementById("profileRows");
   rows.innerHTML = "";
   const items = Object.entries(DATA.tailoring_options).map(([k, v]) =>
     ({ key: k, meta: v.blocks + " block" + (v.blocks > 1 ? "s" : "") }));
   if (nPlural) items.push({ key: PLURAL_KEY,
-    meta: nPlural + " plural [s] markers", labels: ["plural", "singular"] });
+    meta: nPlural + " [s] markers", labels: ["plural", "singular"] });
   for (const it of items) {
     const val = state.profile[it.key] || "";
     const row = document.createElement("div");
@@ -361,7 +375,7 @@ function renderProfile() {
     row.querySelectorAll(".seg button").forEach(b => b.onclick = () => {
       state.profile[it.key] = state.profile[it.key] === b.dataset.v ? "" : b.dataset.v;
       if (!state.profile[it.key]) delete state.profile[it.key];
-      save(); renderAll();
+      save(); renderProfile(); updateProgress();
     });
     rows.appendChild(row);
   }
@@ -376,37 +390,14 @@ function updateProgress() {
   document.getElementById("pCount").textContent =
     `${done} / ${uniq.length} decisions · ${profDone} / ${profAll} profile`;
 }
-function renderAll() {
-  renderProfile();
-  const box = document.getElementById("decisions");
-  box.innerHTML = "";
-  let lastLoc = null;
-  for (const d of ds) {
-    const answered = !!eff(d).a;
-    if (filter === "todo" && answered) continue;
-    if (filter === "done" && !answered) continue;
-    if (d.location !== lastLoc) {
-      const h = document.createElement("h3");
-      h.className = "art"; h.textContent = d.location || "(header)";
-      box.appendChild(h); lastLoc = d.location;
-    }
-    box.appendChild(decCard(d));
-  }
-  if (!box.children.length) {
-    const p = document.createElement("p");
-    p.style.color = "var(--muted)";
-    p.textContent = filter === "todo" ? "Nothing left to answer here — export your answers below."
-      : "Nothing here yet.";
-    box.appendChild(p);
-  }
+function refresh() {
+  ds.forEach(updateMark);
+  renderPanel();
   updateProgress();
 }
 
-document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => {
-  filter = b.dataset.f;
-  document.querySelectorAll(".tabs button").forEach(x => x.classList.toggle("on", x === b));
-  renderAll();
-});
+// ---- header / footer actions ----
+document.getElementById("btnNext").onclick = gotoNextUnanswered;
 document.getElementById("btnExport").onclick = () => {
   const payload = { section: DATA.section, title: DATA.title,
     revision: DATA.revision, exported: new Date().toISOString(),
@@ -426,25 +417,25 @@ document.getElementById("fileImport").onchange = ev => {
     const data = JSON.parse(t);
     state.profile = data.profile || {};
     state.answers = data.answers || {};
-    save(); renderAll();
+    save(); refresh(); renderProfile();
   });
 };
 document.getElementById("btnClear").onclick = () => {
   if (confirm("Clear every answer on this page?")) {
-    state = { profile: {}, answers: {} }; save(); renderAll();
+    state = { profile: {}, answers: {} }; overrideIds.clear();
+    save(); refresh(); renderProfile();
   }
 };
-document.getElementById("btnFullText").onclick = () => openDrawer(null);
-document.getElementById("drawerClose").onclick = closeDrawer;
-document.getElementById("scrim").onclick = closeDrawer;
-document.addEventListener("keydown", ev => { if (ev.key === "Escape") closeDrawer(); });
 
 document.getElementById("hTitle").textContent = DATA.section + " — " + DATA.title;
 document.getElementById("hSub").textContent =
   (DATA.revision || DATA.date_code || "") +
   (DATA.umrl_date ? " · UMRL " + DATA.umrl_date : "") +
   " · answers autosave in this browser";
-renderAll();
+buildDoc();
+renderProfile();
+updateProgress();
+renderPanel();
 </script>
 </body>
 </html>
