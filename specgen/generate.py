@@ -55,12 +55,18 @@ def _strip_revisions(source: str, drop: str, unwrap: str) -> str:
 
 
 def resolve_revisions(source: str) -> str:
-    """Accept all changes: drop <DEL> content, keep <ADD> content."""
+    """Accept all changes: drop <DEL> content, keep <ADD> content.
+
+    Assumes the DEL/ADD markup was produced by this generator (masters with
+    pre-existing revision markup are rejected by generate)."""
     return _strip_revisions(source, drop="DEL", unwrap="ADD")
 
 
 def revert_revisions(source: str) -> str:
-    """Reject all changes: keep <DEL> content, drop <ADD> content."""
+    """Reject all changes: keep <DEL> content, drop <ADD> content.
+
+    Assumes the DEL/ADD markup was produced by this generator (masters with
+    pre-existing revision markup are rejected by generate)."""
     return _strip_revisions(source, drop="ADD", unwrap="DEL")
 
 
@@ -139,6 +145,12 @@ def generate(
 ) -> dict:
     master = Path(master)
     src = secfile.parse(master).source
+    if revisions and re.search(r"<(?:DEL|ADD)[\s>/]", src):
+        raise GenerateError(
+            "master already contains <DEL>/<ADD> revision markup; "
+            "accept or reject its revisions in SI Editor before generating "
+            "with --revisions"
+        )
     rev = src
     groups, _stream, _offs = scan_groups(src)
     by_id = {g.gid: g for g in groups}
