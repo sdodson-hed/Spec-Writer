@@ -39,33 +39,47 @@ def main() -> int:
     for mpath in args.masters:
         mpath = Path(mpath)
         name = mpath.stem
-        sec = secfile.parse(mpath)
-        report = audit_source(sec.source, sec.root)
-        if report["unknowns"]:
-            print(f"FAIL {name}: {len(report['unknowns'])} unattributed signals — skipped")
-            failed += 1
-            continue
-        m = build_manifest(sec)
-        write_html(m, proj / "decisions" / f"{name}.decisions.html")
-        uniq = [
-            d for d in m["decisions"]
-            if not d["in_note"] and not d.get("plural")
-            and not d.get("duplicate_of") and d["safe"]
-        ]
-        status, unresolved = "no answers yet", ""
-        answers_file = next(
-            (p for ext in (".answers.json", ".answers.xlsx")
-             for p in [proj / "answers" / f"{name}{ext}"] if p.exists()),
-            None,
-        )
-        if answers_file is not None:
-            profile, ans = read_answers(answers_file)
-            summary = generate(
-                mpath, profile, ans, proj / "generated" / f"{name}.sec",
-                revisions=args.revisions,
+        try:
+            sec = secfile.parse(mpath)
+            report = audit_source(sec.source, sec.root)
+            if report["unknowns"]:
+                n = len(report["unknowns"])
+                print(f"FAIL {name}: {n} unattributed signals — skipped")
+                failed += 1
+                rows.append(
+                    f"<tr><td>{html_mod.escape(name)}</td><td></td><td></td>"
+                    f"<td>skipped: {n} unattributed signals</td><td></td></tr>"
+                )
+                continue
+            m = build_manifest(sec)
+            write_html(m, proj / "decisions" / f"{name}.decisions.html")
+            uniq = [
+                d for d in m["decisions"]
+                if not d["in_note"] and not d.get("plural")
+                and not d.get("duplicate_of") and d["safe"]
+            ]
+            status, unresolved = "no answers yet", ""
+            answers_file = next(
+                (p for ext in (".answers.json", ".answers.xlsx")
+                 for p in [proj / "answers" / f"{name}{ext}"] if p.exists()),
+                None,
             )
-            status = f"{summary['resolved']} resolved"
-            unresolved = f"{summary['unresolved']} unresolved"
+            if answers_file is not None:
+                profile, ans = read_answers(answers_file)
+                summary = generate(
+                    mpath, profile, ans, proj / "generated" / f"{name}.sec",
+                    revisions=args.revisions,
+                )
+                status = f"{summary['resolved']} resolved"
+                unresolved = f"{summary['unresolved']} unresolved"
+        except Exception as e:
+            print(f"FAIL {name}: {e}")
+            failed += 1
+            rows.append(
+                f"<tr><td>{html_mod.escape(name)}</td><td></td><td></td>"
+                f"<td>FAILED: {html_mod.escape(str(e)[:120])}</td><td></td></tr>"
+            )
+            continue
         rows.append(
             f"<tr><td><a href='decisions/{html_mod.escape(name)}.decisions.html'>"
             f"{html_mod.escape(m['section'])}</a></td>"
