@@ -171,7 +171,7 @@ def cmd_generate(args) -> int:
         print("WARNING: proceeding despite unattributed signals (--force)")
 
     profile, ans = read_answers(args.answers)
-    summary = generate(args.file, profile, ans, args.out)
+    summary = generate(args.file, profile, ans, args.out, revisions=args.revisions)
     print(json.dumps(summary, indent=2))
     return 0
 
@@ -243,6 +243,7 @@ def main(argv=None) -> int:
         if name == "generate":
             sp.add_argument("--answers", required=True)
             sp.add_argument("-o", "--out", required=True)
+            sp.add_argument("--revisions", action="store_true")
         if name in ("html", "generate"):
             sp.add_argument("--force", action="store_true")
         if name == "audit":

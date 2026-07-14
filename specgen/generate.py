@@ -31,6 +31,78 @@ class GenerateError(Exception):
     pass
 
 
+def _strip_revisions(source: str, drop: str, unwrap: str) -> str:
+    """Serialize with <drop> elements removed and <unwrap> elements replaced
+    by their children. Both are only ever wrapped around balanced spans."""
+    sec = secfile.parse_source(source)
+
+    def emit(node) -> str:
+        if not isinstance(node, secfile.Element):
+            return node.serialize()
+        if node.name == drop:
+            return ""
+        if node.name == unwrap:
+            return "".join(emit(c) for c in node.children)
+        if node.self_closing:
+            return node.open_raw
+        inner = "".join(emit(c) for c in node.children)
+        return f"{node.open_raw}{inner}{node.close_raw}"
+
+    parts = [n.serialize() for n in sec.prolog]
+    parts.append(emit(sec.root))
+    parts.extend(n.serialize() for n in sec.epilog)
+    return "".join(parts)
+
+
+def resolve_revisions(source: str) -> str:
+    """Accept all changes: drop <DEL> content, keep <ADD> content."""
+    return _strip_revisions(source, drop="DEL", unwrap="ADD")
+
+
+def revert_revisions(source: str) -> str:
+    """Reject all changes: keep <DEL> content, drop <ADD> content."""
+    return _strip_revisions(source, drop="ADD", unwrap="DEL")
+
+
+def _rev_wrap(g, src: str, low: str, after: str, picked, office: str) -> str:
+    before = src[g.src_start : g.src_end]
+    if low == "delete":
+        return f"<DEL>{before}</DEL>"
+    if low == "keep":
+        content = src[g.options[0].src_start : g.options[0].src_end]
+        if office:
+            content = re.sub(
+                r"\[[^][]*\]",
+                lambda m: f"<DEL>{m.group(0)}</DEL><ADD>{office}</ADD>",
+                content,
+                count=1,
+            )
+        return f"<DEL>[</DEL>{content}<DEL>]</DEL>"
+    if picked is not None:
+        parts, keep = [], set(picked)
+        for i, o in enumerate(g.options):
+            body = src[o.src_start : o.src_end]
+            if i in keep:
+                parts.append(f"<DEL>[</DEL>{body}<DEL>]</DEL>")
+            else:
+                parts.append(f"<DEL>[{body}]</DEL>")
+        # Inter-option gaps are DEL-wrapped so resolve() joins picked bodies
+        # exactly like the clean output does. Gaps are whitespace-only here:
+        # markup-gap groups are always safe=False and never reach the splicer.
+        out, pos = [], g.src_start
+        for i, o in enumerate(g.options):
+            gap = src[pos : o.src_start - 1]  # up to the '['
+            if gap:
+                out.append(f"<DEL>{gap}</DEL>")
+            out.append(parts[i])
+            pos = o.src_end + 1  # past the ']'
+        tail = src[pos : g.src_end]
+        if tail:
+            out.append(f"<DEL>{tail}</DEL>")
+        return "".join(out)
+    return f"<DEL>{before}</DEL><ADD>{after}</ADD>"  # custom / fill-in
+
+
 def _match_option(groups_options: list, ans: str) -> list[int] | None:
     """Interpret an answer against a choice group's options.
     Returns list of 0-based option indices, or None if not an option ref."""
@@ -63,9 +135,11 @@ def generate(
     profile: dict[str, str],
     answers: dict[str, dict],
     out_sec: Path | str,
+    revisions: bool = False,
 ) -> dict:
     master = Path(master)
     src = secfile.parse(master).source
+    rev = src
     groups, _stream, _offs = scan_groups(src)
     by_id = {g.gid: g for g in groups}
 
@@ -97,6 +171,7 @@ def generate(
         notes = entry.get("notes", "")
         before = src[g.src_start : g.src_end]
         low = ans.lower()
+        picked_for_rev = None
 
         if not ans or (
             low == "keep" and g.kind not in ("optional", "submittal-review")
@@ -142,9 +217,16 @@ def generate(
                     src[g.options[i].src_start : g.options[i].src_end] for i in picked
                 )
                 action = f"chose option {[i + 1 for i in picked]}"
+                picked_for_rev = picked
             else:
                 after = ans  # custom / fill-in text (plain text, no markup)
                 action = "filled custom value" if g.kind == "blank" else "custom text"
+        if revisions:
+            office = (
+                entry.get("office", "") if g.kind == "submittal-review" else ""
+            )
+            wrapped = _rev_wrap(g, rev, low, after, picked_for_rev, office)
+            rev = rev[: g.src_start] + wrapped + rev[g.src_end :]
         src = src[: g.src_start] + after + src[g.src_end :]
         if propagated:
             action += f" (propagated from {propagated})"
@@ -199,6 +281,23 @@ def generate(
                 )
                 src = src[:start] + src[end:]
                 removed_tai += 1
+            if revisions:
+                rtmp = master.parent / (master.name + ".rev.tmp")
+                rtmp.write_bytes(rev.encode(secfile.ENCODING))
+                rtree = secfile.parse(rtmp)
+                rspans = [
+                    (t.src_start, t.src_end)
+                    for t in rtree.root.iter("TAI")
+                    if removable(t.attrs.get("OPT", ""))
+                    and not any(a.name == "DEL" for a in t.ancestors())
+                ]
+                rspans = [
+                    s for s in rspans
+                    if not any(o[0] < s[0] and s[1] <= o[1] for o in rspans if o != s)
+                ]
+                for start, end in sorted(rspans, key=lambda s: -s[0]):
+                    rev = rev[:start] + "<DEL>" + rev[start:end] + "</DEL>" + rev[end:]
+                rtmp.unlink(missing_ok=True)
         tmp.unlink(missing_ok=True)
 
     # --- unit-system resolution (on the edited source) ---
@@ -221,6 +320,22 @@ def generate(
         for start, end in spans:
             src = src[:start] + src[end:]
             removed_units += 1
+        if revisions:
+            rtmp = master.parent / (master.name + ".rev.tmp")
+            rtmp.write_bytes(rev.encode(secfile.ENCODING))
+            rtree = secfile.parse(rtmp)
+            rspans = sorted(
+                (
+                    (el.src_start, el.src_end)
+                    for el in rtree.root.iter(drop)
+                    if not any(a.name == "NTE" for a in el.ancestors())
+                    and not any(a.name == "DEL" for a in el.ancestors())
+                ),
+                key=lambda s: -s[0],
+            )
+            for start, end in rspans:
+                rev = rev[:start] + "<DEL>" + rev[start:end] + "</DEL>" + rev[end:]
+            rtmp.unlink(missing_ok=True)
         tmp.unlink(missing_ok=True)
         if removed_units:
             redline.append(
@@ -291,6 +406,17 @@ def generate(
         "units_removed": removed_units,
         "bracket_chars_remaining": src.count("[") + src.count("]"),
     }
+
+    if revisions:
+        original = secfile.parse(master).source
+        if resolve_revisions(rev) != src:
+            raise GenerateError("revisions do not resolve to the clean output")
+        if revert_revisions(rev) != original:
+            raise GenerateError("revisions do not revert to the master")
+        rev_path = out_sec.with_suffix(".revisions.sec")
+        rev_path.write_bytes(rev.encode(secfile.ENCODING))
+        ET.parse(rev_path)  # well-formed
+        summary["revisions_output"] = str(rev_path)
 
     out_sec.with_suffix(".redline.json").write_text(
         json.dumps({"summary": summary, "changes": redline}, indent=2),
