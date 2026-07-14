@@ -33,6 +33,10 @@ from openpyxl.worksheet.datavalidation import DataValidation
 # Special Profile-sheet key: resolves every plural [s] marker in one answer.
 PLURAL_KEY = "PLURAL MARKERS [s]"
 
+# Special Profile-sheet key: SI vs inch-pound units — one answer resolves
+# every <MET>/<ENG> pair in the section.
+UNITS_KEY = "UNITS OF MEASURE (SI/IP)"
+
 _HEADER_FILL = PatternFill("solid", fgColor="1F4E79")
 _HEADER_FONT = Font(color="FFFFFF", bold=True)
 _DUP_FONT = Font(color="808080", italic=True)
@@ -69,6 +73,9 @@ Profile sheet - project-wide settings:
   PLURAL MARKERS [s]: keep = plural wording (multiple units, "Chillers"),
                       remove = singular ("Chiller"). One answer covers
                       every [s] in the section.
+  UNITS OF MEASURE (SI/IP): SI = keep metric values, IP = keep inch-pound
+                      values. One answer resolves every <MET>/<ENG> pair
+                      in the section.
 """
 
 
@@ -178,6 +185,14 @@ def write_workbook(manifest: dict, out_path: Path | str) -> None:
         ps.append([opt, v["blocks"], v["chars"], ""])
         action_dv.add(ps.cell(row=prow, column=4))
         prow += 1
+    units_dv = DataValidation(
+        type="list", formula1='"SI,IP"', allow_blank=True, showErrorMessage=False
+    )
+    ps.add_data_validation(units_dv)
+    if manifest["counts"].get("unit_pairs"):
+        ps.append([UNITS_KEY, manifest["counts"]["unit_pairs"], "", ""])
+        units_dv.add(ps.cell(row=prow, column=4))
+        prow += 1
     n_plural = sum(1 for d in manifest["decisions"] if d.get("plural"))
     if n_plural:
         ps.append([PLURAL_KEY, n_plural, "", ""])
@@ -202,7 +217,7 @@ def read_answers_json(path: Path | str) -> tuple[dict[str, str], dict[str, dict]
     profile = {
         k: str(v).strip().lower()
         for k, v in (data.get("profile") or {}).items()
-        if str(v).strip().lower() in ("keep", "remove")
+        if str(v).strip().lower() in ("keep", "remove", "si", "ip")
     }
     answers: dict[str, dict] = {}
     for gid, v in (data.get("answers") or {}).items():
@@ -255,6 +270,6 @@ def read_workbook(path: Path | str) -> tuple[dict[str, str], dict[str, dict]]:
             if not row or not row[key_i]:
                 continue
             action = "" if len(row) <= act_i or row[act_i] is None else str(row[act_i]).strip().lower()
-            if action in ("keep", "remove"):
+            if action in ("keep", "remove", "si", "ip"):
                 profile[str(row[key_i]).strip()] = action
     return profile, answers

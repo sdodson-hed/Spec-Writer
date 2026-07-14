@@ -16,6 +16,7 @@ exact same span the generator will modify.
 
 from __future__ import annotations
 
+import bisect
 import re
 from dataclasses import dataclass
 
@@ -209,6 +210,37 @@ def build_manifest(sec: SecFile) -> dict:
         kinds[d["kind"]] = kinds.get(d["kind"], 0) + 1
     body_decisions = [d for d in decisions if not d["in_note"]]
 
+    def _content_span(el: Element) -> list[int] | None:
+        if el.self_closing:
+            return None
+        a = bisect.bisect_left(_offs, el.src_start + len(el.open_raw))
+        b = bisect.bisect_left(_offs, el.src_end - len(el.close_raw))
+        return [a, b]
+
+    unit_spans: list[dict] = []
+
+    def _walk_units(el: Element) -> None:
+        kids = [c for c in el.children if isinstance(c, Element)]
+        i = 0
+        while i < len(kids):
+            c = kids[i]
+            if c.name == "MET":
+                eng = kids[i + 1] if i + 1 < len(kids) and kids[i + 1].name == "ENG" else None
+                unit_spans.append(
+                    {"met": _content_span(c),
+                     "eng": _content_span(eng) if eng is not None else None}
+                )
+                if eng is not None:
+                    i += 2
+                    continue
+            elif c.name == "ENG":
+                unit_spans.append({"met": None, "eng": _content_span(c)})
+            else:
+                _walk_units(c)
+            i += 1
+
+    _walk_units(root)
+
     return {
         "section": _WS_RE.sub(" ", scn.text()).strip() if scn is not None else "?",
         "title": _WS_RE.sub(" ", stl.text()).strip() if stl is not None else "?",
@@ -227,6 +259,7 @@ def build_manifest(sec: SecFile) -> dict:
             "references_used_in_body": len(used_ids),
             "references_declared_but_unused": sorted(declared_ids - used_ids),
             "references_used_but_undeclared": sorted(used_ids - declared_ids),
+            "unit_pairs": len(unit_spans),
         },
         "tailoring_options": {
             k: v for k, v in sorted(tai_counts.items(), key=lambda kv: -kv[1]["chars"])
@@ -234,6 +267,7 @@ def build_manifest(sec: SecFile) -> dict:
         "decisions": decisions,
         "submittals": submittal_items,
         "references": declared,
+        "unit_spans": unit_spans,
         "body_submittal_tag_uses": body_sub_uses,
         # full tag-free text of the section; char_start/char_end above index
         # into this, so a UI can show every decision in situ

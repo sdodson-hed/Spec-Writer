@@ -5,7 +5,9 @@ Order of operations:
      offsets stay valid while splicing).
   2. Remove tailoring blocks whose every OPT name is marked "remove"
      (spans recomputed on the already-edited source).
-  3. Verify: re-parse, byte round-trip, well-formed XML — before writing.
+  3. Remove the unchosen <MET>/<ENG> unit elements per the project-level
+     SI/IP profile answer (spans recomputed on the already-edited source).
+  4. Verify: re-parse, byte round-trip, well-formed XML — before writing.
 
 Outputs: the tailored .sec, a redline log (every change, machine-readable),
 and an unresolved-decisions report for engineer review.
@@ -19,7 +21,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from . import secfile
-from .answers import PLURAL_KEY
+from .answers import PLURAL_KEY, UNITS_KEY
 from .scan import context_excerpt, duplicate_map, is_plural, scan_groups
 
 _WS_RE = re.compile(r"\s+")
@@ -199,6 +201,36 @@ def generate(
                 removed_tai += 1
         tmp.unlink(missing_ok=True)
 
+    # --- unit-system resolution (on the edited source) ---
+    units = profile.get(UNITS_KEY, "")
+    removed_units = 0
+    if units in ("si", "ip"):
+        drop = "ENG" if units == "si" else "MET"
+        tmp = master.parent / (master.name + ".gen.tmp")
+        tmp.write_bytes(src.encode(secfile.ENCODING))
+        tree = secfile.parse(tmp)
+        spans = sorted(
+            ((el.src_start, el.src_end) for el in tree.root.iter(drop)),
+            key=lambda s: -s[0],
+        )
+        for start, end in spans:
+            src = src[:start] + src[end:]
+            removed_units += 1
+        tmp.unlink(missing_ok=True)
+        if removed_units:
+            redline.append(
+                {
+                    "id": "UNITS",
+                    "kind": "units",
+                    "action": f"kept {'SI' if units == 'si' else 'IP'} units; "
+                    f"removed {removed_units} <{drop}> elements",
+                    "answer": units,
+                    "notes": "",
+                    "before": "",
+                    "after": "",
+                }
+            )
+
     # --- rescan the OUTPUT: the unresolved report is defined by what
     # actually remains bracketed, so choices that carried nested brackets
     # (e.g. picking a paragraph that itself contains [copper][aluminum])
@@ -251,6 +283,7 @@ def generate(
         "resolved": len([r for r in redline if r["kind"] != "tailoring"]),
         "unresolved": len(unresolved),
         "tailoring_blocks_removed": removed_tai,
+        "units_removed": removed_units,
         "bracket_chars_remaining": src.count("[") + src.count("]"),
     }
 
@@ -277,12 +310,15 @@ def generate(
     brk = [
         c
         for c in redline
-        if c["kind"] != "tailoring" and PLURAL_KEY not in c["action"]
+        if c["kind"] not in ("tailoring", "units") and PLURAL_KEY not in c["action"]
     ]
     tai = [c for c in redline if c["kind"] == "tailoring"]
     if plural:
         verb = "kept (plural)" if plural[0]["answer"] == "keep" else "made singular"
         md += [f"_{len(plural)} plural [s] markers {verb} — profile setting._", ""]
+    units_c = [c for c in redline if c["kind"] == "units"]
+    if units_c:
+        md += [f"_{units_c[0]['action']}._", ""]
     for c in sorted(brk, key=lambda c: c["id"]):
         md += [
             f"## {c['id']} — {c['action']}",
