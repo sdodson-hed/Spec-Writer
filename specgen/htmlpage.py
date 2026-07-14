@@ -98,11 +98,20 @@ button.primary { background: var(--accent); color: var(--accent-ink); border-col
   flex-direction: column; gap: 12px; }
 #navPanel { position: sticky; top: 74px; align-self: start;
   max-height: calc(100vh - 96px); overflow-y: auto; }
-.navrow2 { font-size: 12.5px; cursor: pointer; border-radius: 6px; padding: 4px 8px; }
+.navroot { font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .05em; color: var(--muted); padding: 4px 8px 8px; }
+.navrow2 { display: flex; align-items: baseline; gap: 6px; white-space: nowrap;
+  overflow: hidden; padding: 3px 8px 3px calc(8px + var(--nd) * 14px);
+  cursor: pointer; border-radius: 6px; font-size: 12.5px; }
 .navrow2:hover { background: var(--bg); }
 .navrow2.active { background: var(--accent); color: var(--accent-ink); }
-.navnum { color: var(--muted); font-weight: 600; margin-right: 4px; }
+.navrow2.d0 { font-weight: 700; margin-top: 6px; }
+.navtwist { flex: none; width: 14px; display: inline-block; text-align: center;
+  color: var(--muted); cursor: pointer; }
+.navrow2.active .navtwist { color: var(--accent-ink); }
+.navnum { color: var(--muted); font-weight: 600; flex: none; min-width: 34px; }
 .navrow2.active .navnum { color: var(--accent-ink); }
+.navttl { overflow: hidden; text-overflow: ellipsis; }
 .navanchor { scroll-margin-top: 80px; }
 .panel { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
   padding: 14px 16px; }
@@ -321,15 +330,48 @@ function buildDoc() {
   });
   ds.forEach(updateMark);
 }
+let navCollapsed = new Set();
 function renderNav() {
   const nav = document.getElementById("navPanel");
-  nav.innerHTML = (DATA.nav || []).map((n, i) =>
-    `<div class="navrow2" data-i="${i}" style="padding-left:${8 + n.depth * 14}px">` +
-    `<span class="navnum">${esc(n.num)}</span> ${esc(n.title)}</div>`).join("");
+  const items = DATA.nav || [];
+  let html = `<div class="navroot">${esc(DATA.section)}</div>`;
+  html += items.map((n, i) => {
+    const isBranch = i + 1 < items.length && items[i + 1].depth > n.depth;
+    const twist = isBranch
+      ? `<span class="navtwist" data-twist="${i}">${navCollapsed.has(i) ? "▸" : "▾"}</span>`
+      : `<span class="navtwist"></span>`;
+    return `<div class="navrow2 d${n.depth}" data-i="${i}" style="--nd:${n.depth}" title="${esc(n.title)}">` +
+      twist + `<span class="navnum">${esc(n.num)}</span>` +
+      `<span class="navttl">${esc(n.title)}</span></div>`;
+  }).join("");
+  nav.innerHTML = html;
+  applyNavCollapse();
+  nav.querySelectorAll(".navtwist[data-twist]").forEach(t => t.onclick = ev => {
+    ev.stopPropagation();
+    const i = +t.dataset.twist;
+    if (navCollapsed.has(i)) navCollapsed.delete(i); else navCollapsed.add(i);
+    t.textContent = navCollapsed.has(i) ? "▸" : "▾";
+    applyNavCollapse();
+  });
   nav.querySelectorAll(".navrow2").forEach(row => row.onclick = () => {
     nav.querySelectorAll(".navrow2").forEach(r => r.classList.remove("active"));
     row.classList.add("active");
     document.getElementById("nav-" + row.dataset.i)?.scrollIntoView({ block: "start", behavior: "smooth" });
+  });
+}
+function applyNavCollapse() {
+  const nav = document.getElementById("navPanel");
+  const items = DATA.nav || [];
+  let hideDepth = null;
+  nav.querySelectorAll(".navrow2").forEach((row, i) => {
+    const d = items[i].depth;
+    if (hideDepth !== null && d > hideDepth) {
+      row.style.display = "none";
+      return;
+    }
+    hideDepth = null;
+    row.style.display = "";
+    if (navCollapsed.has(i)) hideDepth = d;
   });
 }
 function updateMark(d) {

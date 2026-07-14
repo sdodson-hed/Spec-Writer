@@ -51,8 +51,7 @@ def _title_of(el: Element) -> str:
     return _WS_RE.sub(" ", ttl.text()).strip() if ttl is not None else el.name
 
 
-_PART_NUM_RE = re.compile(r"PART\s+\d+", re.I)
-_SPT_NUM_RE = re.compile(r"=\s*([0-9][0-9.]*)")
+_PART_TITLE_STRIP_RE = re.compile(r"^PART\s+\d+\s*", re.I)
 
 
 @dataclass
@@ -64,38 +63,43 @@ class _LocSpan:
     num: str = ""
 
 
-def _location_num(child: Element) -> str:
-    if child.name == "SPT":
-        m = _SPT_NUM_RE.search(child.open_raw)
-        return m.group(1) if m else ""
-    snippet = _WS_RE.sub(" ", child.text()[:60])
-    m = _PART_NUM_RE.search(snippet)
-    return m.group(0) if m else ""
-
-
 def _location_index(root: Element) -> list[_LocSpan]:
-    """Source spans of PRT/SPT (with titles and paragraph numbers)."""
+    """Source spans of PRT/SPT (with titles and positionally-computed numbers).
+
+    Real masters carry no numbering attributes on PRT/SPT — SI's own Navigate
+    panel computes numbers from document position, so we do the same: depth-0
+    (PRT) children of root are "PART 1", "PART 2", ... in order; each PRT/SPT's
+    j-th PRT/SPT child gets "<parent-prefix>.j".
+    """
     locs: list[_LocSpan] = []
 
-    def walk(el: Element, depth: int) -> None:
+    # counter is a 1-item list (not a plain int) so that non-PRT/SPT wrapper
+    # children (e.g. <TAI> alternates) share and advance the SAME sibling
+    # count as their surrounding siblings, instead of each wrapper starting
+    # its own count from zero — masters interleave tailoring wrappers between
+    # true PRT/SPT siblings, and SI's positional numbering does not reset there.
+    def walk(el: Element, depth: int, prefix: str, counter: list[int]) -> None:
         for child in el.children:
             if not isinstance(child, Element):
                 continue
             if child.name in ("PRT", "SPT"):
+                counter[0] += 1
+                child_no = counter[0]
+                if depth == 0:
+                    num, child_prefix = f"PART {child_no}", str(child_no)
+                else:
+                    num = child_prefix = f"{prefix}.{child_no}"
+                title = _title_of(child)
+                if depth == 0:
+                    title = _PART_TITLE_STRIP_RE.sub("", title)
                 locs.append(
-                    _LocSpan(
-                        child.src_start,
-                        child.src_end,
-                        _title_of(child),
-                        depth,
-                        _location_num(child),
-                    )
+                    _LocSpan(child.src_start, child.src_end, title, depth, num)
                 )
-                walk(child, depth + 1)
+                walk(child, depth + 1, child_prefix, [0])
             else:
-                walk(child, depth)
+                walk(child, depth, prefix, counter)
 
-    walk(root, 0)
+    walk(root, 0, "", [0])
     return locs
 
 

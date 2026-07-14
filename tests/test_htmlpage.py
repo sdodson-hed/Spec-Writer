@@ -80,26 +80,31 @@ def test_profOpen_is_clamped(tmp_path):
     assert "Math.max(0, profAll - Object.keys(state.profile).length)" in html
 
 
-NUMBERED = (
-    "<SEC><PRT>PART 1  <TTL>GENERAL</TTL><SPT =1.1>1.1  <TTL>REFERENCES</TTL>"
-    "body text</SPT></PRT></SEC>"
+NAVSRC = (
+    "<SEC><SCN>SECTION 99 00 00</SCN>"
+    "<PRT><TTL>PART 1   GENERAL</TTL>"
+    "<SPT><TTL>REFERENCES</TTL>ref text</SPT>"
+    "<SPT><TTL>SUBMITTALS</TTL><SPT><TTL>Nested Item</TTL>x</SPT></SPT></PRT>"
+    "<PRT><TTL>PART 2   PRODUCTS</TTL><SPT><TTL>STANDARD PRODUCTS</TTL>y</SPT></PRT></SEC>"
 )
 
 
-def test_manifest_nav_numbering_and_depth(tmp_path):
+def test_manifest_nav_positional_numbering_and_depth(tmp_path):
     p = tmp_path / "nav.SEC"
-    p.write_bytes(NUMBERED.encode(secfile.ENCODING))
+    p.write_bytes(NAVSRC.encode(secfile.ENCODING))
     m = build_manifest(secfile.parse(p))
     nav = m["nav"]
-    assert len(nav) == 2
-    assert nav[0]["num"] == "PART 1"
-    assert nav[0]["title"] == "GENERAL"
-    assert nav[0]["depth"] == 0
-    assert nav[1]["num"] == "1.1"
-    assert nav[1]["title"] == "REFERENCES"
-    assert nav[1]["depth"] == 1
-    assert isinstance(nav[0]["char"], int) and isinstance(nav[1]["char"], int)
-    assert nav[0]["char"] <= nav[1]["char"]
+    got = [(n["num"], n["title"], n["depth"]) for n in nav]
+    assert got == [
+        ("PART 1", "GENERAL", 0),
+        ("1.1", "REFERENCES", 1),
+        ("1.2", "SUBMITTALS", 1),
+        ("1.2.1", "Nested Item", 2),
+        ("PART 2", "PRODUCTS", 0),
+        ("2.1", "STANDARD PRODUCTS", 1),
+    ]
+    chars = [n["char"] for n in nav]
+    assert chars == sorted(chars)
 
 
 def test_page_has_nav_panel_and_anchors(tmp_path):
@@ -108,6 +113,18 @@ def test_page_has_nav_panel_and_anchors(tmp_path):
     assert "btnNavToggle" in html
     assert "navanchor" in html
     assert "DATA.nav" in html
+
+
+def test_page_nav_is_collapsible_tree(tmp_path):
+    p = tmp_path / "nav.SEC"
+    p.write_bytes(NAVSRC.encode(secfile.ENCODING))
+    out = tmp_path / "nav.html"
+    write_html(build_manifest(secfile.parse(p)), out)
+    html = out.read_text(encoding="utf-8")
+    assert "navroot" in html
+    assert "navtwist" in html
+    assert "navttl" in html
+    assert "text-overflow" in html
 
 
 def test_clear_preserves_nav_open(tmp_path):
