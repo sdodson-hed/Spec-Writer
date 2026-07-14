@@ -106,6 +106,10 @@ def build_manifest(sec: SecFile) -> dict:
         (s.src_end, _WS_RE.sub(" ", s.text()).strip()) for s in root.iter("SUB")
     ]
     sub_spans.sort()
+    note_ends = sorted(
+        (nte.src_end, _WS_RE.sub(" ", nte.text()).strip()[:1500])
+        for nte in root.iter("NTE")
+    )
     decisions = []
     for g in groups:
         in_note = g.in_note
@@ -140,6 +144,9 @@ def build_manifest(sec: SecFile) -> dict:
                 "offset": g.src_start,
                 "char_start": g.char_start,
                 "char_end": g.char_end,
+                "note_guidance": next(
+                    (t for e, t in reversed(note_ends) if e <= g.src_start), ""
+                ),
             }
         )
 
@@ -217,6 +224,12 @@ def build_manifest(sec: SecFile) -> dict:
         b = bisect.bisect_left(_offs, el.src_end - len(el.close_raw))
         return [a, b]
 
+    tailoring_spans = [
+        {"opt": t.attrs.get("OPT", "?"), "span": _content_span(t)}
+        for t in root.iter("TAI")
+        if _content_span(t) is not None
+    ]
+
     unit_spans: list[dict] = []
 
     def _walk_units(el: Element) -> None:
@@ -267,6 +280,7 @@ def build_manifest(sec: SecFile) -> dict:
         "tailoring_options": {
             k: v for k, v in sorted(tai_counts.items(), key=lambda kv: -kv[1]["chars"])
         },
+        "tailoring_spans": tailoring_spans,
         "decisions": decisions,
         "submittals": submittal_items,
         "references": declared,

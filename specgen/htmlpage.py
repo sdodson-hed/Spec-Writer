@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .answers import PLURAL_KEY
+from .answers import PLURAL_KEY, UNITS_KEY
 
 _TEMPLATE = r"""<!doctype html>
 <html lang="en">
@@ -86,6 +86,8 @@ button.primary { background: var(--accent); color: var(--accent-ink); border-col
 #doc mark ins { color: var(--done-ink); background: var(--done);
   text-decoration: underline; font-weight: 600; border-radius: 3px; }
 #doc mark s.fold { cursor: pointer; font-style: italic; }
+#doc s.unitcut { color: var(--del-ink); background: var(--del); text-decoration: line-through; }
+#doc mark.taicut { cursor: pointer; }
 
 #side { position: sticky; top: 74px; align-self: start;
   max-height: calc(100vh - 96px); overflow-y: auto; display: flex;
@@ -99,6 +101,7 @@ button.primary { background: var(--accent); color: var(--accent-ink); border-col
 .chip.kind-choice { color: var(--choice); border-color: currentColor; }
 .chip.kind-blank { color: var(--blank); border-color: currentColor; }
 .chip.kind-optional { color: var(--optional); border-color: currentColor; }
+.chip.kind-submittal-review { color: #2563eb; border-color: currentColor; }
 .chip.warn { color: #b91c1c; border-color: currentColor; }
 .dec-top { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
 .loc { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
@@ -170,6 +173,7 @@ footer.actions { position: fixed; bottom: 0; left: 0; right: 0; background: var(
 <script>
 const DATA = __DATA__;
 const PLURAL_KEY = __PLURAL_KEY__;
+const UNITS_KEY = __UNITS_KEY__;
 const KEY = "specgen:" + DATA.section + ":" + (DATA.revision || "");
 let state = { profile: {}, answers: {}, view: "redline" };
 try { state = Object.assign(state, JSON.parse(localStorage.getItem(KEY) || "{}")); } catch (e) {}
@@ -194,6 +198,10 @@ function eff(d) {
 }
 function resolvedText(d, a) {
   if (a === "delete") return null;
+  if (d.kind === "submittal-review" && a === "keep") {
+    const o = (state.answers[d.id] || {}).office;
+    return o ? d.options[0].replace(/\[[^\]]*\]/, o) : d.options[0];
+  }
   if (a === "keep") return d.options[0];
   if (d.kind === "choice" && /^\d+(,\d+)*$/.test(a))
     return a.split(",").map(n => d.options[+n - 1] ?? "?").join(d.multi ? "\n" : " ");
@@ -213,19 +221,71 @@ function setNotes(id, val) {
 }
 
 // ---- document view ----
+function activeSpans() {
+  const spans = ds.map(d => ({ s: d.char_start, e: d.char_end, pri: 3, d }));
+  for (const t of DATA.tailoring_spans || []) {
+    const names = t.opt.split(",").map(x => x.trim());
+    if (names.every(nm => state.profile[nm] === "remove"))
+      spans.push({ s: t.span[0], e: t.span[1], pri: 2, tai: t.opt });
+  }
+  const u = state.profile[UNITS_KEY];
+  if (u === "si" || u === "ip")
+    for (const pr of DATA.unit_spans || []) {
+      const drop = u === "si" ? pr.eng : pr.met;
+      if (drop) spans.push({ s: drop[0], e: drop[1], pri: 1, unit: true });
+    }
+  spans.sort((a, b) => a.s - b.s || b.e - a.e || b.pri - a.pri);
+  // drop zero-length, contained-in-equal-or-lower-pri conflicts, partial overlaps
+  const out = [], stack = [];
+  for (const sp of spans) {
+    while (stack.length && stack[stack.length - 1].e <= sp.s) stack.pop();
+    const top = stack[stack.length - 1];
+    if (top) {
+      if (sp.e > top.e) continue;              // partial overlap: drop
+      if (sp.pri >= top.pri) continue;         // decision inside decision etc.
+      sp.parent = top;
+    }
+    out.push(sp); stack.push(sp);
+  }
+  return out;
+}
+
+function inRemovedTai(d) {
+  return (DATA.tailoring_spans || []).some(t =>
+    t.span[0] <= d.char_start && d.char_end <= t.span[1] &&
+    t.opt.split(",").map(x => x.trim()).every(nm => state.profile[nm] === "remove"));
+}
+
 function buildDoc() {
   const doc = document.getElementById("doc");
-  const marks = ds.slice().sort((a, b) => a.char_start - b.char_start);
+  const spans = activeSpans();
+  const roots = spans.filter(sp => !sp.parent);
   let html = "", pos = 0;
-  for (const d of marks) {
-    if (d.char_start < pos) continue;
-    html += esc(DATA.text.slice(pos, d.char_start));
-    html += `<mark data-id="${d.id}" id="mk-${d.id}"></mark>`;
-    pos = d.char_end;
+  const emit = (sp) => {
+    const kids = spans.filter(k => k.parent === sp);
+    let inner = "", p = sp.s;
+    for (const k of kids) { inner += esc(DATA.text.slice(p, k.s)); inner += emit(k); p = k.e; }
+    inner += esc(DATA.text.slice(p, sp.e));
+    if (sp.d) return `<mark data-id="${sp.d.id}" id="mk-${sp.d.id}">${inner}</mark>`;
+    if (sp.tai) {
+      const n = sp.e - sp.s;
+      return state.view === "redline"
+        ? `<mark class="deleted taicut" data-opt="${esc(sp.tai)}" title="click to expand">▸ ${esc(sp.tai)} removed (${n} chars)</mark>`
+        : "";
+    }
+    return state.view === "redline" ? `<s class="unitcut">${inner}</s>` : "";
+  };
+  for (const sp of roots) {
+    html += esc(DATA.text.slice(pos, sp.s));
+    html += emit(sp);
+    pos = sp.e;
   }
   html += esc(DATA.text.slice(pos));
   doc.innerHTML = html;
-  doc.querySelectorAll("mark").forEach(m => m.onclick = () => select(m.dataset.id, false));
+  doc.querySelectorAll("mark[data-id]").forEach(m => m.onclick = () => select(m.dataset.id, false));
+  doc.querySelectorAll("mark.taicut").forEach(m => m.onclick = () => {
+    alert("Tailoring block '" + m.dataset.opt + "' is removed by the Project Profile. Set it back to 'keep' to restore the text.");
+  });
   ds.forEach(updateMark);
 }
 function updateMark(d) {
@@ -290,6 +350,9 @@ function renderPanel() {
     <span class="chip kind-${d.kind}">${d.kind}</span>`;
   if (!d.safe) h += `<span class="chip warn">manual edit needed</span>`;
   h += `</div><div class="loc">${esc(d.location)}</div>`;
+  if (d.note_guidance) h += `<details class="panel" style="padding:8px 10px">
+    <summary style="cursor:pointer;font-size:12px;color:var(--muted)">Designer note</summary>
+    <div style="font-size:12.5px;margin-top:6px">${esc(d.note_guidance)}</div></details>`;
   if (d.hint) h += `<div class="hint">${esc(d.hint)}</div>`;
   if (!d.safe) {
     h += `<div class="dupnote">This bracket crosses structural markup and must be
@@ -312,7 +375,16 @@ function renderPanel() {
     return;
   }
   const own = state.answers[d.id] || {};
-  if (d.kind === "choice" && d.multi) {
+  if (d.kind === "submittal-review") {
+    h += `<div class="loc">${esc(d.label || "")}</div>`;
+    h += `<div class="hint">Government review flag for this submittal item.</div>`;
+    h += `<div class="opts">
+      <button data-val="keep" class="${e.a === "keep" ? "on" : ""}">keep — Government-reviewed (G)</button>
+      <button data-val="delete" class="danger ${e.a === "delete" ? "on" : ""}">remove — for information only</button></div>`;
+    h += `<div class="freeform"><input type="text" data-office
+      placeholder="reviewer office (e.g. AE) — optional"
+      value="${esc(own.office || "")}"><button data-act="setoffice">Set</button></div>`;
+  } else if (d.kind === "choice" && d.multi) {
     const picked = new Set(/^\d+(,\d+)*$/.test(e.a) ? e.a.split(",") : []);
     h += `<div class="hint">Select all that apply — these are independent items,
       keep any combination.</div>`;
@@ -363,6 +435,15 @@ function renderPanel() {
     setAnswer(d.id, inp.value.trim()); };
   const notes = p.querySelector("[data-notes]");
   if (notes) notes.onchange = () => setNotes(d.id, notes.value.trim());
+  const off = p.querySelector("[data-office]");
+  const offBtn = p.querySelector("[data-act=setoffice]");
+  if (offBtn) offBtn.onclick = () => {
+    const cur = state.answers[d.id] || {};
+    if (off.value.trim()) cur.office = off.value.trim(); else delete cur.office;
+    if (cur.answer || cur.notes || cur.office) state.answers[d.id] = cur;
+    else delete state.answers[d.id];
+    save(); refresh();
+  };
   wireNav(p);
 }
 function nestedTag(o) {
@@ -390,11 +471,11 @@ function gotoNextUnanswered() {
   const start = activeId ? ds.findIndex(d => d.id === activeId) : -1;
   for (let i = 1; i <= ds.length; i++) {
     const d = ds[(start + i + ds.length) % ds.length];
-    if (d.safe && !eff(d).a && !d.duplicate_of) { select(d.id, true); return; }
+    if (d.safe && !eff(d).a && !d.duplicate_of && !inRemovedTai(d)) { select(d.id, true); return; }
   }
   for (let i = 1; i <= ds.length; i++) {  // fall back to any unanswered
     const d = ds[(start + i + ds.length) % ds.length];
-    if (d.safe && !eff(d).a) { select(d.id, true); return; }
+    if (d.safe && !eff(d).a && !inRemovedTai(d)) { select(d.id, true); return; }
   }
 }
 function gotoPrev() {
@@ -408,6 +489,9 @@ function renderProfile() {
   rows.innerHTML = "";
   const items = Object.entries(DATA.tailoring_options).map(([k, v]) =>
     ({ key: k, meta: v.blocks + " block" + (v.blocks > 1 ? "s" : "") }));
+  if ((DATA.unit_spans || []).length) items.push({ key: UNITS_KEY,
+    meta: DATA.unit_spans.length + " unit pairs",
+    labels: ["SI", "IP"], values: ["si", "ip"] });
   if (nPlural) items.push({ key: PLURAL_KEY,
     meta: nPlural + " [s] markers", labels: ["plural", "singular"] });
   for (const it of items) {
@@ -415,21 +499,23 @@ function renderProfile() {
     const row = document.createElement("div");
     row.className = "row";
     const l1 = it.labels ? it.labels[0] : "keep", l2 = it.labels ? it.labels[1] : "remove";
+    const v1 = it.values ? it.values[0] : "keep", v2 = it.values ? it.values[1] : "remove";
     row.innerHTML = `<span class="name">${esc(it.key)}</span>
       <span class="meta">${esc(it.meta)}</span>
       <span class="seg">
-        <button data-v="keep" class="${val === "keep" ? "on" : ""}">${l1}</button>
-        <button data-v="remove" class="${val === "remove" ? "on" : ""}">${l2}</button></span>`;
+        <button data-v="${v1}" class="${val === v1 ? "on" : ""}">${l1}</button>
+        <button data-v="${v2}" class="${val === v2 ? "on" : ""}">${l2}</button></span>`;
     row.querySelectorAll(".seg button").forEach(b => b.onclick = () => {
       state.profile[it.key] = state.profile[it.key] === b.dataset.v ? "" : b.dataset.v;
       if (!state.profile[it.key]) delete state.profile[it.key];
       save(); renderProfile(); updateProgress();
+      if (it.key === UNITS_KEY || DATA.tailoring_options[it.key]) buildDoc();
     });
     rows.appendChild(row);
   }
 }
 function updateProgress() {
-  const uniq = ds.filter(d => !d.duplicate_of && d.safe);
+  const uniq = ds.filter(d => !d.duplicate_of && d.safe && !inRemovedTai(d));
   const done = uniq.filter(d => eff(d).a).length;
   const profDone = Object.keys(state.profile).length;
   const profAll = Object.keys(DATA.tailoring_options).length + (nPlural ? 1 : 0);
@@ -450,11 +536,23 @@ document.getElementById("btnView").onclick = () => {
   state.view = state.view === "redline" ? "clean" : "redline";
   document.getElementById("btnView").textContent =
     "Redline view: " + (state.view === "redline" ? "on" : "off");
-  save(); refresh();
+  save(); buildDoc(); renderPanel(); updateProgress();
 };
 document.getElementById("btnExport").onclick = () => {
+  const uniq = ds.filter(d => !d.duplicate_of && d.safe && !inRemovedTai(d));
+  const open = uniq.filter(d => !eff(d).a).map(d => d.id);
+  const profAll = Object.keys(DATA.tailoring_options).length
+    + (nPlural ? 1 : 0) + ((DATA.unit_spans || []).length ? 1 : 0);
+  const profOpen = profAll - Object.keys(state.profile).length;
+  if (open.length || profOpen > 0) {
+    const list = open.slice(0, 15).join(", ") + (open.length > 15 ? " …" : "");
+    if (!confirm(`${open.length} decision(s) and ${profOpen} profile setting(s) are still unanswered:\n${list}\n\nExport anyway? They will be flagged for engineer review, never defaulted.`))
+      return;
+  }
   const payload = { section: DATA.section, title: DATA.title,
     revision: DATA.revision, exported: new Date().toISOString(),
+    complete: open.length === 0 && profOpen <= 0,
+    unanswered: open,
     profile: state.profile, answers: state.answers };
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)],
@@ -471,13 +569,13 @@ document.getElementById("fileImport").onchange = ev => {
     const data = JSON.parse(t);
     state.profile = data.profile || {};
     state.answers = data.answers || {};
-    save(); refresh(); renderProfile();
+    save(); buildDoc(); renderPanel(); updateProgress(); renderProfile();
   });
 };
 document.getElementById("btnClear").onclick = () => {
   if (confirm("Clear every answer on this page?")) {
     state = { profile: {}, answers: {}, view: state.view || "redline" }; overrideIds.clear();
-    save(); refresh(); renderProfile();
+    save(); buildDoc(); renderPanel(); updateProgress(); renderProfile();
   }
 };
 
@@ -504,5 +602,6 @@ def write_html(manifest: dict, out_path: Path | str) -> None:
         _TEMPLATE.replace("__TITLE__", f"{manifest['section']} — decisions")
         .replace("__DATA__", data)
         .replace("__PLURAL_KEY__", json.dumps(PLURAL_KEY))
+        .replace("__UNITS_KEY__", json.dumps(UNITS_KEY))
     )
     Path(out_path).write_text(html, encoding="utf-8")
