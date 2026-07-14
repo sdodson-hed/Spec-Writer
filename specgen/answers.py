@@ -12,6 +12,11 @@ reordering):
   - profile: {option or setting name: "keep" | "remove"}
   - answers: {decision id: {"answer": str, "notes": str}}
 
+`read_answers_json` additionally passes through manual text edits (keys
+prefixed ``ME@``, as exported by the HTML decision page) with their
+{"start", "end", "before", "after", "notes"} fields. The .xlsx workbook path
+has no manual-edit support: direct text editing is JSON/HTML only.
+
 Answer cell semantics (case-insensitive keywords):
   choice   -> option number ("2"), several numbers ("1,3"), exact option
               text, "delete" (remove the whole group), or custom text
@@ -221,6 +226,22 @@ def read_answers_json(path: Path | str) -> tuple[dict[str, str], dict[str, dict]
     }
     answers: dict[str, dict] = {}
     for gid, v in (data.get("answers") or {}).items():
+        key = str(gid).strip()
+        if key.startswith("ME@"):
+            if not isinstance(v, dict):
+                continue  # malformed manual edit: skip
+            try:
+                start, end = int(v["start"]), int(v["end"])
+            except (KeyError, TypeError, ValueError):
+                continue  # non-int-able start/end: skip
+            before, after = v.get("before"), v.get("after")
+            if not isinstance(before, str) or not isinstance(after, str):
+                continue  # missing/non-string before/after: skip
+            rec = {"start": start, "end": end, "before": before, "after": after}
+            notes = v.get("notes")
+            rec["notes"] = notes.strip() if isinstance(notes, str) else ""
+            answers[key] = rec
+            continue
         if isinstance(v, dict):
             ans = str(v.get("answer", "")).strip()
             notes = str(v.get("notes", "")).strip()
@@ -231,7 +252,7 @@ def read_answers_json(path: Path | str) -> tuple[dict[str, str], dict[str, dict]
             rec = {"answer": ans, "notes": notes}
             if office:
                 rec["office"] = office
-            answers[str(gid).strip()] = rec
+            answers[key] = rec
     return profile, answers
 
 

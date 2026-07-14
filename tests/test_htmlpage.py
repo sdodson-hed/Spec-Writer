@@ -160,3 +160,17 @@ def test_numeric_answer_in_range_guard_present(tmp_path):
     assert "idx.every(i => i >= 0 && i < d.options.length)" in html
     # resolvedText no longer falls back to "?" for an unmatched index
     assert 'd.options[+n - 1] ?? "?"' not in html
+
+
+def test_manual_text_edit_hooks_present(tmp_path):
+    # Task 14: direct select-and-replace text editing, tracked end-to-end.
+    html = _page(tmp_path)
+    assert 'class="gap" data-s=' in html   # offset-mapped gaps for selection
+    assert "TEXT EDIT" in html              # edit-card chip
+    assert "data-me" in html                # edit mark attribute/lookup
+    assert "state.edits" in html            # edit records persisted in state
+    assert (
+        "This bracket crosses structural markup and can't be answered as a "
+        "choice; it is always listed in the unresolved report. You can "
+        "select the text in the document and edit it directly instead."
+    ) in html

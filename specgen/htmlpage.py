@@ -92,6 +92,8 @@ button.primary { background: var(--accent); color: var(--accent-ink); border-col
 #doc mark s.fold { cursor: pointer; font-style: italic; }
 #doc s.unitcut { color: var(--del-ink); background: var(--del); text-decoration: line-through; }
 #doc mark.taicut { cursor: pointer; }
+#doc mark.me { background: var(--done); color: var(--done-ink);
+  border: 1px dashed var(--accent); }
 
 #side { position: sticky; top: 74px; align-self: start;
   max-height: calc(100vh - 96px); overflow-y: auto; display: flex;
@@ -202,12 +204,15 @@ const DATA = __DATA__;
 const PLURAL_KEY = __PLURAL_KEY__;
 const UNITS_KEY = __UNITS_KEY__;
 const KEY = "specgen:" + DATA.section + ":" + (DATA.revision || "");
-let state = { profile: {}, answers: {}, view: "redline", navOpen: true };
+let state = { profile: {}, answers: {}, edits: {}, view: "redline", navOpen: true };
 try { state = Object.assign(state, JSON.parse(localStorage.getItem(KEY) || "{}")); } catch (e) {}
 state.view = state.view || "redline";
 state.navOpen = state.navOpen === undefined ? true : state.navOpen;
+state.edits = state.edits || {};
 let activeId = null;
 let overrideIds = new Set();
+let meState = null;              // {s, e, id} while the edit card is open
+let staleEditsDropped = pruneStaleEdits();
 
 const ds = DATA.decisions.filter(d => !d.in_note && !d.plural);
 const byId = Object.fromEntries(ds.map(d => [d.id, d]));
@@ -260,6 +265,8 @@ function setNotes(id, val) {
 // ---- document view ----
 function activeSpans() {
   const spans = ds.map(d => ({ s: d.char_start, e: d.char_end, pri: 3, d }));
+  for (const [id, rec] of Object.entries(state.edits || {}))
+    spans.push({ s: rec.start, e: rec.end, pri: 3, me: id });
   for (const t of DATA.tailoring_spans || []) {
     const names = t.opt.split(",").map(x => x.trim());
     if (names.every(nm => state.profile[nm] === "remove"))
@@ -315,7 +322,8 @@ function buildDoc() {
       html += esc(DATA.text.slice(pos, cut)) + `<span class="navanchor" id="nav-${a.i}">${num}</span>`;
       pos = cut; ai++;
     }
-    return html + esc(DATA.text.slice(pos, to));
+    html += esc(DATA.text.slice(pos, to));
+    return `<span class="gap" data-s="${from}">${html}</span>`;
   };
   let html = "", pos = 0;
   const emit = (sp) => {
@@ -324,6 +332,7 @@ function buildDoc() {
     for (const k of kids) { inner += esc(DATA.text.slice(p, k.s)); inner += emit(k); p = k.e; }
     inner += esc(DATA.text.slice(p, sp.e));
     if (sp.d) return `<mark data-id="${sp.d.id}" id="mk-${sp.d.id}">${inner}</mark>`;
+    if (sp.me) return `<mark class="me" data-me="${esc(sp.me)}" id="mk-me-${esc(sp.me)}">${inner}</mark>`;
     if (sp.tai) {
       const n = sp.e - sp.s;
       return state.view === "redline"
@@ -343,7 +352,12 @@ function buildDoc() {
   doc.querySelectorAll("mark.taicut").forEach(m => m.onclick = () => {
     alert("Tailoring block '" + m.dataset.opt + "' is removed by the Project Profile. Set it back to 'keep' to restore the text.");
   });
+  doc.querySelectorAll("mark.me").forEach(m => m.onclick = () => {
+    const id = m.dataset.me, rec = state.edits[id];
+    if (rec) startEdit(rec.start, rec.end, id);
+  });
   ds.forEach(updateMark);
+  Object.keys(state.edits || {}).forEach(updateMeMark);
 }
 let navCollapsed = new Set();
 function renderNav() {
@@ -432,9 +446,18 @@ function renderRedline(m, d, txt) {
   const f = m.querySelector("s.fold");
   if (f) f.onclick = ev => { ev.stopPropagation(); f.outerHTML = `<s>${esc(orig)}</s>`; };
 }
+function updateMeMark(id) {
+  const m = document.getElementById("mk-me-" + id);
+  const rec = state.edits[id];
+  if (!m || !rec) return;
+  m.innerHTML = state.view === "redline"
+    ? `<s>${esc(rec.before)}</s><ins>${esc(rec.after)}</ins>`
+    : esc(rec.after);
+}
 
 // ---- side panel ----
 function select(id, scrollDoc) {
+  meState = null;
   const prev = activeId;
   activeId = id;
   if (prev && byId[prev]) updateMark(byId[prev]);
@@ -448,9 +471,14 @@ function select(id, scrollDoc) {
 }
 function renderPanel() {
   const p = document.getElementById("decPanel");
+  if (meState) { renderEditCard(p); return; }
   const d = byId[activeId];
   if (!d) {
-    p.innerHTML = `<div class="muted">Click any highlighted decision in the text
+    const notice = staleEditsDropped
+      ? `<div class="muted" style="margin-bottom:8px">${staleEditsDropped} text
+        edit(s) no longer matched this master and were dropped — see console.</div>`
+      : "";
+    p.innerHTML = notice + `<div class="muted">Click any highlighted decision in the text
       to answer it here. Yellow = to answer, green = answered.</div>`;
     return;
   }
@@ -464,9 +492,7 @@ function renderPanel() {
     <div style="font-size:12.5px;margin-top:6px">${esc(d.note_guidance)}</div></details>`;
   if (d.hint) h += `<div class="hint">${esc(d.hint)}</div>`;
   if (!d.safe) {
-    h += `<div class="dupnote">This bracket crosses structural markup and must be
-      resolved in the SpecsIntact editor; it is always listed in the unresolved
-      report.</div>` + navRow();
+    h += `<div class="dupnote">This bracket crosses structural markup and can't be answered as a choice; it is always listed in the unresolved report. You can select the text in the document and edit it directly instead.</div>` + navRow();
     p.innerHTML = h; wireNav(p); return;
   }
   const overridden = state.answers[d.id] && state.answers[d.id].answer;
@@ -594,6 +620,121 @@ function gotoPrev() {
   if (i > 0) select(ds[i - 1].id, true);
 }
 
+// ---- manual text edits (select-and-replace, tracked changes) ----
+function pruneStaleEdits() {
+  let dropped = 0;
+  for (const [id, rec] of Object.entries(state.edits || {})) {
+    if (DATA.text.slice(rec.start, rec.end) !== rec.before) {
+      delete state.edits[id];
+      dropped++;
+      console.warn("Dropped stale text edit " + id + ": no longer matches this master.");
+    }
+  }
+  return dropped;
+}
+function onDocMouseUp() {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || sel.rangeCount === 0) return;
+  const range = sel.getRangeAt(0);
+  const gapOffset = (node, offset) => {
+    const gap = node.parentElement;
+    if (node.nodeType !== Node.TEXT_NODE || !gap || !gap.classList.contains("gap"))
+      return null;
+    let sum = 0, sib = node.previousSibling;
+    while (sib) {
+      if (sib.nodeType === Node.TEXT_NODE) sum += sib.textContent.length;
+      sib = sib.previousSibling;
+    }
+    return { gap, off: +gap.dataset.s + sum + offset };
+  };
+  const a = gapOffset(range.startContainer, range.startOffset);
+  const b = gapOffset(range.endContainer, range.endOffset);
+  if (!a || !b || a.gap !== b.gap) { rejectSelection(); return; }
+  let s = a.off, e = b.off;
+  if (s > e) [s, e] = [e, s];
+  if (!DATA.text.slice(s, e).trim()) return;  // empty/whitespace-only: ignore
+  startEdit(s, e, null);
+}
+function rejectSelection() {
+  document.getElementById("decPanel").innerHTML =
+    `<div class="muted">Select plain text only — bracketed decisions are
+      answered from the panel.</div>`;
+}
+function startEdit(s, e, id) {
+  const prev = activeId;
+  activeId = null;
+  if (prev && byId[prev]) updateMark(byId[prev]);
+  meState = { s, e, id: id || null };
+  renderPanel();
+}
+function meConflict(s, e, excludeId) {
+  for (const d of ds)
+    if (s < d.char_end && e > d.char_start) return `decision ${d.id}`;
+  for (const t of DATA.tailoring_spans || []) {
+    const names = t.opt.split(",").map(x => x.trim());
+    if (names.every(nm => state.profile[nm] === "remove") &&
+        s < t.span[1] && e > t.span[0]) return `removed tailoring block (${t.opt})`;
+  }
+  const u = state.profile[UNITS_KEY];
+  if (u === "si" || u === "ip")
+    for (const pr of DATA.unit_spans || []) {
+      const drop = u === "si" ? pr.eng : pr.met;
+      if (drop && s < drop[1] && e > drop[0]) return "a removed unit value";
+    }
+  for (const [eid, rec] of Object.entries(state.edits || {})) {
+    if (eid === excludeId) continue;
+    if (s < rec.end && e > rec.start) return `edit ${eid}`;
+  }
+  return null;
+}
+function renderEditCard(p) {
+  const { s, e, id } = meState;
+  const rec = id ? state.edits[id] : null;
+  const orig = rec ? rec.before : DATA.text.slice(s, e);
+  const curNotes = rec ? (rec.notes || "") : "";
+  let h = `<div class="dec-top"><span class="chip">TEXT EDIT</span></div>`;
+  h += `<div class="loc">Original text</div>`;
+  h += `<div class="hint" style="font-style:normal;white-space:pre-wrap">${esc(orig)}</div>`;
+  h += `<textarea id="meText" style="width:100%;min-height:90px;font:inherit;
+    font-size:13px;padding:8px;border:1px solid var(--line);border-radius:8px;
+    background:var(--bg);color:var(--ink)">${esc(orig)}</textarea>`;
+  h += `<div class="notes-row"><input id="meNotes"
+    placeholder="note for the audit log (optional)" value="${esc(curNotes)}"></div>`;
+  h += `<div class="navrow"><button class="primary" id="meSave">Save</button>
+    <button id="meCancel">Cancel</button>` +
+    (id ? `<button class="danger" id="meRemove">Remove edit</button>` : "") +
+    `</div><div class="muted" id="meMsg" style="margin-top:6px"></div>`;
+  p.innerHTML = h;
+  document.getElementById("meSave").onclick = saveEdit;
+  document.getElementById("meCancel").onclick = () => { meState = null; renderPanel(); };
+  const rm = document.getElementById("meRemove");
+  if (rm) rm.onclick = () => removeEdit(id);
+}
+function saveEdit() {
+  const { s, e, id } = meState;
+  const orig = id ? state.edits[id].before : DATA.text.slice(s, e);
+  const after = document.getElementById("meText").value;
+  const notes = document.getElementById("meNotes").value.trim();
+  const msg = document.getElementById("meMsg");
+  if (after === orig) {
+    msg.textContent = "Type a replacement that differs from the original text.";
+    return;
+  }
+  const conflict = meConflict(s, e, id);
+  if (conflict) {
+    msg.textContent = `Can't save — this selection overlaps ${conflict}.`;
+    return;
+  }
+  state.edits["ME@" + s] = { start: s, end: e, before: orig, after, notes };
+  meState = null;
+  save(); buildDoc(); refresh();
+}
+function removeEdit(id) {
+  delete state.edits[id];
+  meState = null;
+  save(); buildDoc(); refresh();
+}
+
 // ---- profile ----
 function renderProfile() {
   const rows = document.getElementById("profileRows");
@@ -634,8 +775,10 @@ function updateProgress() {
   const profDone = profAll - profOpen;
   document.getElementById("pBar").style.width =
     Math.round(100 * (done + profDone) / (uniq.length + profAll)) + "%";
+  const meCount = Object.keys(state.edits || {}).length;
   document.getElementById("pCount").textContent =
-    `${done} / ${uniq.length} decisions · ${profDone} / ${profAll} profile`;
+    `${done} / ${uniq.length} decisions · ${profDone} / ${profAll} profile` +
+    (meCount ? ` · ${meCount} text edits` : "");
 }
 function refresh() {
   ds.forEach(updateMark);
@@ -672,7 +815,8 @@ document.getElementById("btnExport").onclick = () => {
     revision: DATA.revision, exported: new Date().toISOString(),
     complete: open.length === 0 && profOpen <= 0,
     unanswered: open,
-    profile: state.profile, answers: state.answers };
+    profile: state.profile,
+    answers: { ...state.answers, ...state.edits } };
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)],
     { type: "application/json" }));
@@ -688,17 +832,23 @@ document.getElementById("fileImport").onchange = ev => {
   f.text().then(t => {
     const data = JSON.parse(t);
     state.profile = data.profile || {};
-    state.answers = data.answers || {};
+    state.answers = {}; state.edits = {};
+    for (const [k, v] of Object.entries(data.answers || {})) {
+      if (k.startsWith("ME@")) state.edits[k] = v; else state.answers[k] = v;
+    }
+    staleEditsDropped = pruneStaleEdits();
     save(); buildDoc(); renderPanel(); updateProgress(); renderProfile();
   });
 };
 document.getElementById("btnClear").onclick = () => {
   if (confirm("Clear every answer on this page?")) {
-    state = { profile: {}, answers: {}, view: state.view || "redline",
-      navOpen: state.navOpen }; overrideIds.clear();
+    state = { profile: {}, answers: {}, edits: {}, view: state.view || "redline",
+      navOpen: state.navOpen }; overrideIds.clear(); meState = null;
     save(); buildDoc(); renderPanel(); updateProgress(); renderProfile();
   }
 };
+
+document.getElementById("doc").addEventListener("mouseup", onDocMouseUp);
 
 window.addEventListener("beforeunload", ev => {
   if (dirty) { ev.preventDefault(); ev.returnValue = ""; }

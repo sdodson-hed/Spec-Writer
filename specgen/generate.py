@@ -136,6 +136,33 @@ def _match_option(groups_options: list, ans: str) -> list[int] | None:
     return matches if matches else None
 
 
+def _escape_manual_edit_text(text: str) -> str:
+    """Escape plain replacement text before splicing into SEC/XML source."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _invalid_edit_reason(
+    edit: dict, stream: str, offs: list[int], groups: list
+) -> str:
+    """Validate a manual text edit (an ``ME@`` answer) against the ORIGINAL
+    scan. Returns "" if valid, else a human-readable rejection reason."""
+    try:
+        start, end = int(edit.get("start")), int(edit.get("end"))
+    except (TypeError, ValueError):
+        return "manual edit has a non-numeric start/end"
+    if not (0 <= start < end <= len(stream)):
+        return "manual edit start/end is out of range for this master"
+    before = str(edit.get("before", ""))
+    if stream[start:end] != before:
+        return "selected text no longer matches this master (before mismatch)"
+    if offs[end - 1] - offs[start] != end - 1 - start:
+        return "selection crosses structural markup"
+    for g in groups:
+        if start < g.char_end and end > g.char_start:
+            return f"selection overlaps decision {g.gid}"
+    return ""
+
+
 def generate(
     master: Path | str,
     profile: dict[str, str],
@@ -152,10 +179,13 @@ def generate(
             "with --revisions"
         )
     rev = src
-    groups, _stream, _offs = scan_groups(src)
+    groups, stream, offs = scan_groups(src)
     by_id = {g.gid: g for g in groups}
 
-    unknown = sorted(set(answers) - set(by_id))
+    me_edits_in = {k: v for k, v in answers.items() if k.startswith("ME@")}
+    bracket_answers = {k: v for k, v in answers.items() if not k.startswith("ME@")}
+
+    unknown = sorted(set(bracket_answers) - set(by_id))
     if unknown:
         raise GenerateError(f"answer IDs not in section: {unknown}")
 
@@ -164,14 +194,69 @@ def generate(
 
     redline: list[dict] = []
     unresolved: list[dict] = []
+    unresolved_edits: list[dict] = []
+    valid_edits: list[dict] = []
+    for key, edit in me_edits_in.items():
+        reason = _invalid_edit_reason(edit, stream, offs, groups)
+        if reason:
+            unresolved_edits.append(
+                {
+                    "id": key,
+                    "kind": "manual-edit",
+                    "options": [],
+                    "note": f"{reason}; re-open the decision page against "
+                    "this master",
+                }
+            )
+            continue
+        start, end = int(edit["start"]), int(edit["end"])
+        after_plain = str(edit.get("after", ""))
+        valid_edits.append(
+            {
+                "id": key,
+                "src_start": offs[start],
+                "src_end": offs[end - 1] + 1,
+                "before": str(edit.get("before", "")),
+                "after_plain": after_plain,
+                "after_esc": _escape_manual_edit_text(after_plain),
+                "notes": str(edit.get("notes", "")),
+            }
+        )
 
-    for g in sorted(groups, key=lambda g: -g.src_start):
+    worklist = sorted(
+        [*groups, *valid_edits],
+        key=lambda x: -(x["src_start"] if isinstance(x, dict) else x.src_start),
+    )
+    for item in worklist:
+        if isinstance(item, dict):
+            e = item
+            if revisions:
+                wrapped = f"<DEL>{e['before']}</DEL><ADD>{e['after_esc']}</ADD>"
+                rev = rev[: e["src_start"]] + wrapped + rev[e["src_end"] :]
+            src = src[: e["src_start"]] + e["after_esc"] + src[e["src_end"] :]
+            redline.append(
+                {
+                    "id": e["id"],
+                    "kind": "manual-edit",
+                    "action": "text edited",
+                    "answer": e["after_plain"],
+                    "notes": e["notes"],
+                    "before": e["before"],
+                    "after": e["after_esc"],
+                }
+            )
+            continue
+        g = item
         if g.in_note:
             continue  # designer-note text is never edited
-        entry = answers.get(g.gid, {})
+        entry = bracket_answers.get(g.gid, {})
         propagated = ""
-        if not entry.get("answer") and g.gid in dups and dups[g.gid] in answers:
-            entry = answers[dups[g.gid]]
+        if (
+            not entry.get("answer")
+            and g.gid in dups
+            and dups[g.gid] in bracket_answers
+        ):
+            entry = bracket_answers[dups[g.gid]]
             propagated = dups[g.gid]
         if not entry.get("answer") and is_plural(g) and plural_action:
             entry = {
@@ -396,6 +481,7 @@ def generate(
                 "in a follow-up pass or in SI Editor"
             )
         unresolved.append(entry)
+    unresolved.extend(unresolved_edits)
 
     # --- verify before writing ---
     out_sec = Path(out_sec)
@@ -485,8 +571,9 @@ def generate(
     ]
     for u in unresolved:
         opts = " | ".join(u["options"]) if u["kind"] != "blank" else "(fill in)"
-        unresolved_md += [f"## {u['id']} · {u['kind']}", f"- Options: {opts}",
-                          f"- Context: {u['context']}"]
+        unresolved_md += [f"## {u['id']} · {u['kind']}", f"- Options: {opts}"]
+        if "context" in u:
+            unresolved_md.append(f"- Context: {u['context']}")
         if u.get("note"):
             unresolved_md.append(f"- **Note:** {u['note']}")
         unresolved_md.append("")
