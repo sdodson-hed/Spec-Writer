@@ -127,10 +127,12 @@ def generate(
             after = src[g.options[0].src_start : g.options[0].src_end]
             action = "kept (brackets removed)"
             if g.kind == "submittal-review" and entry.get("office"):
-                after = re.sub(
+                filled = re.sub(
                     r"\[[^][]*\]", lambda _m: entry["office"], after, count=1
                 )
-                action = f"kept; reviewer office = {entry['office']}"
+                if filled != after:  # only claim the fill if a blank existed
+                    after = filled
+                    action = f"kept; reviewer office = {entry['office']}"
         else:
             picked = _match_option(g.options, ans) if g.kind == "choice" else None
             if picked is not None:

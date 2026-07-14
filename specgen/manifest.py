@@ -202,7 +202,9 @@ def build_manifest(sec: SecFile) -> dict:
         if not any(a.name == "REF" for a in rid.ancestors()):
             used_ids.add(_WS_RE.sub(" ", rid.text()).strip())
 
-    kinds: dict[str, int] = {}
+    # Legacy kinds are seeded so counts always carry kind_choice/kind_blank/
+    # kind_optional (cli.cmd_report subscripts them); new kinds count in too.
+    kinds: dict[str, int] = {"choice": 0, "blank": 0, "optional": 0}
     for d in decisions:
         kinds[d["kind"]] = kinds.get(d["kind"], 0) + 1
     body_decisions = [d for d in decisions if not d["in_note"]]

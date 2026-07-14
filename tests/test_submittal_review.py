@@ -3,6 +3,7 @@ from pathlib import Path
 from specgen import secfile
 from specgen.answers import read_answers_json
 from specgen.generate import generate
+from specgen.manifest import build_manifest
 from specgen.scan import scan_groups
 
 SUBREV = (
@@ -31,6 +32,20 @@ def test_generate_keep_with_office(tmp_path):
     result = out.read_bytes().decode(secfile.ENCODING)
     assert "; <SUB>G" in result and ", AE" in result
     assert "[_____]" not in result
+
+
+def test_manifest_seeds_legacy_kind_counts_and_label():
+    # Fixture contains ONLY a submittal-review group: the legacy kind_*
+    # counts consumed by cli.cmd_report must still be present (zeroed).
+    sec = secfile.parse_source(SUBREV)
+    m = build_manifest(sec)
+    c = m["counts"]
+    assert c["kind_choice"] == 0
+    assert c["kind_blank"] == 0
+    assert c["kind_optional"] == 0
+    assert c["kind_submittal-review"] == 1
+    d = next(d for d in m["decisions"] if d["kind"] == "submittal-review")
+    assert d["label"] == "Controls"
 
 
 def test_json_office_passthrough(tmp_path):
