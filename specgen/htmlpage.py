@@ -241,9 +241,9 @@ function updateMark(d) {
     m.title = "click to answer";
   } else {
     const txt = resolvedText(d, e.a);
-    cls.push("answered");
+    cls.push(txt === null ? "deleted" : "answered");
     m.className = cls.join(" ");
-    m.title = "answered — click to change";
+    m.title = txt === null ? "removed — click to change" : "answered — click to change";
     renderRedline(m, d, txt);
     return;
   }
@@ -476,7 +476,7 @@ document.getElementById("fileImport").onchange = ev => {
 };
 document.getElementById("btnClear").onclick = () => {
   if (confirm("Clear every answer on this page?")) {
-    state = { profile: {}, answers: {} }; overrideIds.clear();
+    state = { profile: {}, answers: {}, view: state.view || "redline" }; overrideIds.clear();
     save(); refresh(); renderProfile();
   }
 };

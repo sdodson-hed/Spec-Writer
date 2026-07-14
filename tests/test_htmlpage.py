@@ -19,3 +19,10 @@ def test_redline_hooks_present(tmp_path):
     assert "state.view" in html            # persisted view mode
     assert "renderRedline" in html         # redline mark renderer
     assert "#doc mark s" in html           # strikethrough CSS
+
+
+def test_clear_preserves_view_mode(tmp_path):
+    html = _page(tmp_path)
+    # btnClear's reset must carry the view key forward, or the live state
+    # loses it until the next reload (renders clean while the toggle says on)
+    assert 'view: state.view || "redline"' in html
