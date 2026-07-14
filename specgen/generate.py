@@ -210,7 +210,12 @@ def generate(
         tmp.write_bytes(src.encode(secfile.ENCODING))
         tree = secfile.parse(tmp)
         spans = sorted(
-            ((el.src_start, el.src_end) for el in tree.root.iter(drop)),
+            (
+                (el.src_start, el.src_end)
+                for el in tree.root.iter(drop)
+                # designer-note text is never edited
+                if not any(a.name == "NTE" for a in el.ancestors())
+            ),
             key=lambda s: -s[0],
         )
         for start, end in spans:

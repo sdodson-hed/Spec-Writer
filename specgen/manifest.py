@@ -224,6 +224,9 @@ def build_manifest(sec: SecFile) -> dict:
         i = 0
         while i < len(kids):
             c = kids[i]
+            if c.name == "NTE":  # designer-note text is never edited
+                i += 1
+                continue
             if c.name == "MET":
                 eng = kids[i + 1] if i + 1 < len(kids) and kids[i + 1].name == "ENG" else None
                 unit_spans.append(
