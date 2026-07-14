@@ -58,10 +58,9 @@ class _LocSpan:
     depth: int
 
 
-def _location_index(root: Element) -> tuple[list[_LocSpan], list[tuple[int, int]]]:
-    """Source spans of PRT/SPT (with titles) and NTE elements."""
+def _location_index(root: Element) -> list[_LocSpan]:
+    """Source spans of PRT/SPT (with titles)."""
     locs: list[_LocSpan] = []
-    notes: list[tuple[int, int]] = []
 
     def walk(el: Element, depth: int) -> None:
         for child in el.children:
@@ -73,12 +72,10 @@ def _location_index(root: Element) -> tuple[list[_LocSpan], list[tuple[int, int]
                 )
                 walk(child, depth + 1)
             else:
-                if child.name == "NTE":
-                    notes.append((child.src_start, child.src_end))
                 walk(child, depth)
 
     walk(root, 0)
-    return locs, notes
+    return locs
 
 
 def _locate(locs: list[_LocSpan], offset: int) -> str:
@@ -89,7 +86,7 @@ def _locate(locs: list[_LocSpan], offset: int) -> str:
 def build_manifest(sec: SecFile) -> dict:
     root = sec.root
     groups, stream, _offs = scan_groups(sec.source)
-    locs, notes = _location_index(root)
+    locs = _location_index(root)
 
     scn = root.first("SCN")
     stl = root.first("STL")
@@ -106,7 +103,7 @@ def build_manifest(sec: SecFile) -> dict:
     _BLOCK_TAGS = ("<OLI", "<ITM", "<LST", "<TXT", "<SPT")
     decisions = []
     for g in groups:
-        in_note = any(s <= g.src_start < e for s, e in notes)
+        in_note = g.in_note
         context = context_excerpt(stream, g.char_start, g.char_end)
         # options that are whole list items / blocks are independent includes
         # (select any subset); inline text alternatives are choose-one

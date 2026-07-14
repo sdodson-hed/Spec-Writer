@@ -78,6 +78,8 @@ def generate(
     unresolved: list[dict] = []
 
     for g in sorted(groups, key=lambda g: -g.src_start):
+        if g.in_note:
+            continue  # designer-note text is never edited
         entry = answers.get(g.gid, {})
         propagated = ""
         if not entry.get("answer") and g.gid in dups and dups[g.gid] in answers:
@@ -201,6 +203,8 @@ def generate(
     final_groups, final_stream, _ = scan_groups(src)
     unresolved = []
     for fg in final_groups:
+        if fg.in_note:
+            continue
         opts = [o.text for o in fg.options]
         bucket = pool.get(_sig(opts))
         origin = bucket.pop(0) if bucket else None

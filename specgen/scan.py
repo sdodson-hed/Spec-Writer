@@ -40,6 +40,7 @@ class Group:
     char_start: int  # span in the tag-free text stream (for context)
     char_end: int = -1
     safe: bool = True  # tag-balanced: group and options can be spliced safely
+    in_note: bool = False  # inside <NTE>: guidance text, never a decision
 
 
 def balanced(src_slice: str) -> bool:
@@ -71,11 +72,13 @@ def balanced(src_slice: str) -> bool:
     return not stack
 
 
-def text_stream(src: str) -> tuple[str, list[int]]:
-    """Return (chars, offsets): the concatenation of all text outside markup,
-    with offsets[i] = source offset of chars[i]."""
+def text_stream(src: str) -> tuple[str, list[int], list[bool]]:
+    """Return (chars, offsets, mask): text outside markup, source offset of
+    each char, and mask[i]=True when the char is inside an <NTE> note."""
     chars: list[str] = []
     offs: list[int] = []
+    mask: list[bool] = []
+    nte_depth = 0
     i, n = 0, len(src)
     while i < n:
         if src[i] == "<":
@@ -84,12 +87,20 @@ def text_stream(src: str) -> tuple[str, list[int]]:
             elif src.startswith("<?", i):
                 i = src.find("?>", i) + 2
             else:
-                _, i = _parse_tag(src, i)
+                raw, i = _parse_tag(src, i)
+                body = raw[1:-1]
+                if body.startswith("/"):
+                    if body[1:].strip() == "NTE":
+                        nte_depth = max(0, nte_depth - 1)
+                elif not body.rstrip().endswith("/"):
+                    if body.split()[0].strip() == "NTE":
+                        nte_depth += 1
         else:
             chars.append(src[i])
             offs.append(i)
+            mask.append(nte_depth > 0)
             i += 1
-    return "".join(chars), offs
+    return "".join(chars), offs, mask
 
 
 def classify(options: list[str]) -> str:
@@ -102,7 +113,7 @@ def classify(options: list[str]) -> str:
 
 def scan_groups(src: str) -> tuple[list[Group], str, list[int]]:
     """Scan the source and return (groups, text_stream, offsets)."""
-    text, offs = text_stream(src)
+    text, offs, mask = text_stream(src)
     groups: list[Group] = []
     i, n = 0, len(text)
     while i < n:
@@ -110,6 +121,7 @@ def scan_groups(src: str) -> tuple[list[Group], str, list[int]]:
             i += 1
             continue
         group_char_start = i
+        in_note = mask[i]
         options: list[Option] = []
         end = i
         while i < n and text[i] == "[":
@@ -141,6 +153,7 @@ def scan_groups(src: str) -> tuple[list[Group], str, list[int]]:
             if (
                 k < n
                 and text[k] == "["
+                and mask[k] == in_note
                 and src[offs[end - 1] + 1 : offs[k]].strip(" \t") == ""
             ):
                 i = k
@@ -162,6 +175,7 @@ def scan_groups(src: str) -> tuple[list[Group], str, list[int]]:
                     char_start=group_char_start,
                     char_end=end,
                     safe=safe,
+                    in_note=in_note,
                 )
             )
         else:

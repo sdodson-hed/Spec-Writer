@@ -179,7 +179,11 @@ class SecFile:
 
 def parse(path: Path | str) -> SecFile:
     path = Path(path)
-    source = path.read_bytes().decode(ENCODING)
+    return parse_source(path.read_bytes().decode(ENCODING), path)
+
+
+def parse_source(source: str, path: Path | str = Path("<memory>")) -> SecFile:
+    path = Path(path)
     prolog: list = []
     epilog: list = []
     root: Element | None = None
