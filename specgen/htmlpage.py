@@ -81,6 +81,11 @@ button.primary { background: var(--accent); color: var(--accent-ink); border-col
   font-size: 11px; padding: 0 5px; text-decoration: none; }
 #doc mark.unsafe { outline: 1px dashed #b91c1c; }
 #doc mark.active { outline: 2px solid var(--accent); }
+#doc mark s { color: var(--del-ink); background: var(--del);
+  text-decoration: line-through; font-weight: 400; border-radius: 3px; }
+#doc mark ins { color: var(--done-ink); background: var(--done);
+  text-decoration: underline; font-weight: 600; border-radius: 3px; }
+#doc mark s.fold { cursor: pointer; font-style: italic; }
 
 #side { position: sticky; top: 74px; align-self: start;
   max-height: calc(100vh - 96px); overflow-y: auto; display: flex;
@@ -141,6 +146,7 @@ footer.actions { position: fixed; bottom: 0; left: 0; right: 0; background: var(
   <div class="progress"><div class="bar"><i id="pBar"></i></div>
     <span class="count" id="pCount"></span></div>
   <button id="btnNext" class="primary">Next unanswered ↓</button>
+  <button id="btnView">Redline view: on</button>
 </header>
 <div id="layout">
   <div id="doc"></div>
@@ -165,8 +171,9 @@ footer.actions { position: fixed; bottom: 0; left: 0; right: 0; background: var(
 const DATA = __DATA__;
 const PLURAL_KEY = __PLURAL_KEY__;
 const KEY = "specgen:" + DATA.section + ":" + (DATA.revision || "");
-let state = { profile: {}, answers: {} };
+let state = { profile: {}, answers: {}, view: "redline" };
 try { state = Object.assign(state, JSON.parse(localStorage.getItem(KEY) || "{}")); } catch (e) {}
+state.view = state.view || "redline";
 let activeId = null;
 let overrideIds = new Set();
 
@@ -234,15 +241,27 @@ function updateMark(d) {
     m.title = "click to answer";
   } else {
     const txt = resolvedText(d, e.a);
-    if (txt === null) {
-      cls.push("deleted");
-      m.textContent = "deleted"; m.title = "removed — click to change";
-    } else {
-      cls.push("answered");
-      m.textContent = txt; m.title = "answered — click to change";
-    }
+    cls.push("answered");
+    m.className = cls.join(" ");
+    m.title = "answered — click to change";
+    renderRedline(m, d, txt);
+    return;
   }
   m.className = cls.join(" ");
+}
+function renderRedline(m, d, txt) {
+  const orig = DATA.text.slice(d.char_start, d.char_end);
+  if (state.view !== "redline") {
+    if (txt === null) { m.classList.add("deleted"); m.textContent = "deleted"; }
+    else { m.textContent = txt; }
+    return;
+  }
+  const del = orig.length > 200
+    ? `<s class="fold" data-full="1">${esc(orig.slice(0, 80))}… ⟨${orig.length} chars removed — click⟩</s>`
+    : `<s>${esc(orig)}</s>`;
+  m.innerHTML = txt === null ? del : del + `<ins>${esc(txt)}</ins>`;
+  const f = m.querySelector("s.fold");
+  if (f) f.onclick = ev => { ev.stopPropagation(); f.outerHTML = `<s>${esc(orig)}</s>`; };
 }
 
 // ---- side panel ----
@@ -427,6 +446,12 @@ function refresh() {
 
 // ---- header / footer actions ----
 document.getElementById("btnNext").onclick = gotoNextUnanswered;
+document.getElementById("btnView").onclick = () => {
+  state.view = state.view === "redline" ? "clean" : "redline";
+  document.getElementById("btnView").textContent =
+    "Redline view: " + (state.view === "redline" ? "on" : "off");
+  save(); refresh();
+};
 document.getElementById("btnExport").onclick = () => {
   const payload = { section: DATA.section, title: DATA.title,
     revision: DATA.revision, exported: new Date().toISOString(),
@@ -463,6 +488,8 @@ document.getElementById("hSub").textContent =
   " · answers autosave in this browser";
 buildDoc();
 renderProfile();
+document.getElementById("btnView").textContent =
+  "Redline view: " + (state.view === "redline" ? "on" : "off");
 updateProgress();
 renderPanel();
 </script>
