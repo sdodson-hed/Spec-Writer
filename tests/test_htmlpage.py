@@ -57,3 +57,24 @@ def test_page_has_gate_units_and_notes(tmp_path):
     assert "note_guidance" in html
     assert "unanswered: open" in html   # export gate payload
     assert "tailoring_spans" in html
+
+
+def test_esc_helper_escapes_double_quotes(tmp_path):
+    # esc() output is interpolated into attribute values (value="...",
+    # data-opt="..."); unescaped quotes in a typed answer like 30" dia
+    # would truncate the attribute and corrupt the stored value on re-edit.
+    html = _page(tmp_path)
+    assert '&quot;' in html
+    assert 'replace(/"/g, "&quot;")' in html
+
+
+def test_dirty_flag_and_beforeunload_nag(tmp_path):
+    html = _page(tmp_path)
+    assert "let dirty = false;" in html
+    assert "beforeunload" in html
+    assert "dirty = false;" in html.split("beforeunload")[0]  # export resets it
+
+
+def test_profOpen_is_clamped(tmp_path):
+    html = _page(tmp_path)
+    assert "Math.max(0, profAll - Object.keys(state.profile).length)" in html

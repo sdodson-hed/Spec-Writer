@@ -184,8 +184,9 @@ let overrideIds = new Set();
 const ds = DATA.decisions.filter(d => !d.in_note && !d.plural);
 const byId = Object.fromEntries(ds.map(d => [d.id, d]));
 const nPlural = DATA.decisions.filter(d => d.plural).length;
-const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-const save = () => localStorage.setItem(KEY, JSON.stringify(state));
+const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+let dirty = false;
+const save = () => { dirty = true; localStorage.setItem(KEY, JSON.stringify(state)); };
 
 function eff(d) {
   const own = state.answers[d.id];
@@ -517,9 +518,10 @@ function renderProfile() {
 function updateProgress() {
   const uniq = ds.filter(d => !d.duplicate_of && d.safe && !inRemovedTai(d));
   const done = uniq.filter(d => eff(d).a).length;
-  const profDone = Object.keys(state.profile).length;
   const profAll = Object.keys(DATA.tailoring_options).length
     + (nPlural ? 1 : 0) + ((DATA.unit_spans || []).length ? 1 : 0);
+  const profOpen = Math.max(0, profAll - Object.keys(state.profile).length);
+  const profDone = profAll - profOpen;
   document.getElementById("pBar").style.width =
     Math.round(100 * (done + profDone) / (uniq.length + profAll)) + "%";
   document.getElementById("pCount").textContent =
@@ -544,7 +546,7 @@ document.getElementById("btnExport").onclick = () => {
   const open = uniq.filter(d => !eff(d).a).map(d => d.id);
   const profAll = Object.keys(DATA.tailoring_options).length
     + (nPlural ? 1 : 0) + ((DATA.unit_spans || []).length ? 1 : 0);
-  const profOpen = profAll - Object.keys(state.profile).length;
+  const profOpen = Math.max(0, profAll - Object.keys(state.profile).length);
   if (open.length || profOpen > 0) {
     const list = open.slice(0, 15).join(", ") + (open.length > 15 ? " …" : "");
     if (!confirm(`${open.length} decision(s) and ${profOpen} profile setting(s) are still unanswered:\n${list}\n\nExport anyway? They will be flagged for engineer review, never defaulted.`))
@@ -560,6 +562,7 @@ document.getElementById("btnExport").onclick = () => {
     { type: "application/json" }));
   a.download = DATA.section.replace(/^SECTION\s+/i, "") + ".answers.json";
   a.click();
+  dirty = false;
 };
 document.getElementById("btnImport").onclick = () =>
   document.getElementById("fileImport").click();
@@ -579,6 +582,10 @@ document.getElementById("btnClear").onclick = () => {
     save(); buildDoc(); renderPanel(); updateProgress(); renderProfile();
   }
 };
+
+window.addEventListener("beforeunload", ev => {
+  if (dirty) { ev.preventDefault(); ev.returnValue = ""; }
+});
 
 document.getElementById("hTitle").textContent = DATA.section + " — " + DATA.title;
 document.getElementById("hSub").textContent =
