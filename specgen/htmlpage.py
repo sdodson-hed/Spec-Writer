@@ -518,7 +518,8 @@ function updateProgress() {
   const uniq = ds.filter(d => !d.duplicate_of && d.safe && !inRemovedTai(d));
   const done = uniq.filter(d => eff(d).a).length;
   const profDone = Object.keys(state.profile).length;
-  const profAll = Object.keys(DATA.tailoring_options).length + (nPlural ? 1 : 0);
+  const profAll = Object.keys(DATA.tailoring_options).length
+    + (nPlural ? 1 : 0) + ((DATA.unit_spans || []).length ? 1 : 0);
   document.getElementById("pBar").style.width =
     Math.round(100 * (done + profDone) / (uniq.length + profAll)) + "%";
   document.getElementById("pCount").textContent =

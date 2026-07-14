@@ -150,13 +150,19 @@ def build_manifest(sec: SecFile) -> dict:
             }
         )
 
-    # Tailoring
+    # Tailoring — the profile is keyed by INDIVIDUAL option names: a joint
+    # OPT="AIR FORCE,NAVY" block is removed only when ALL its names are
+    # "remove" (generate.removable comma-splits), so each name gets its own
+    # row and the joint block's counters are credited to every name.
     tai_counts: dict[str, dict] = {}
+    n_tai_blocks = 0
     for tai in root.iter("TAI"):
-        opt = tai.attrs.get("OPT", "?")
-        entry = tai_counts.setdefault(opt, {"blocks": 0, "chars": 0})
-        entry["blocks"] += 1
-        entry["chars"] += len(tai.text())
+        n_tai_blocks += 1
+        chars = len(tai.text())
+        for name in tai.attrs.get("OPT", "?").split(","):
+            entry = tai_counts.setdefault(name.strip(), {"blocks": 0, "chars": 0})
+            entry["blocks"] += 1
+            entry["chars"] += chars
 
     # Submittals: grouped walk inside the SUBMITTALS subpart, usage elsewhere
     submittal_items: list[dict] = []
@@ -268,7 +274,7 @@ def build_manifest(sec: SecFile) -> dict:
             "bracket_groups_in_body": len(body_decisions),
             "bracket_groups_in_notes": len(decisions) - len(body_decisions),
             **{f"kind_{k}": v for k, v in sorted(kinds.items())},
-            "tailoring_blocks": sum(v["blocks"] for v in tai_counts.values()),
+            "tailoring_blocks": n_tai_blocks,
             "notes_to_specifier": sum(1 for _ in root.iter("NTE")),
             "submittal_items": len(submittal_items),
             "references_declared": len(declared),
