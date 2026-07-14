@@ -174,3 +174,13 @@ def test_manual_text_edit_hooks_present(tmp_path):
         "choice; it is always listed in the unresolved report. You can "
         "select the text in the document and edit it directly instead."
     ) in html
+
+
+def test_prune_stale_edits_also_drops_conflicting_imports(tmp_path):
+    # A hand-edited/imported answers JSON can carry ME@ records that overlap
+    # a decision span, removed-tailoring span, unit span, or another edit.
+    # pruneStaleEdits must reuse the save-time conflict predicate so a bad
+    # import can't hide a decision's mark or re-export a conflicting edit.
+    html = _page(tmp_path)
+    body = html.split("function pruneStaleEdits()")[1].split("\nfunction ")[0]
+    assert "meConflict(" in body

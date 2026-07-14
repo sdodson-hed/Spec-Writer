@@ -196,8 +196,24 @@ def generate(
     unresolved: list[dict] = []
     unresolved_edits: list[dict] = []
     valid_edits: list[dict] = []
-    for key, edit in me_edits_in.items():
+    accepted_spans: list[tuple[int, int, str]] = []  # (start, end, key)
+
+    def _edit_sort_key(item):
+        # Deterministic acceptance order: ascending start (first edit wins on
+        # overlap); malformed starts sort last, then by key for stability.
+        try:
+            return (0, int(item[1].get("start")), item[0])
+        except (TypeError, ValueError):
+            return (1, 0, item[0])
+
+    for key, edit in sorted(me_edits_in.items(), key=_edit_sort_key):
         reason = _invalid_edit_reason(edit, stream, offs, groups)
+        if not reason:
+            start, end = int(edit["start"]), int(edit["end"])
+            for a_start, a_end, a_key in accepted_spans:
+                if start < a_end and end > a_start:
+                    reason = f"overlaps another text edit ({a_key})"
+                    break
         if reason:
             unresolved_edits.append(
                 {
@@ -209,7 +225,7 @@ def generate(
                 }
             )
             continue
-        start, end = int(edit["start"]), int(edit["end"])
+        accepted_spans.append((start, end, key))
         after_plain = str(edit.get("after", ""))
         valid_edits.append(
             {

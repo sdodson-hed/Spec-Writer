@@ -126,6 +126,41 @@ def test_overlap_with_bracket_group_is_unresolved_group_still_applies(tmp_path):
     assert "overlaps decision BRK-0001" in unresolved_md
 
 
+def test_overlapping_edits_first_by_start_wins(tmp_path):
+    text, _offs = _stream()
+    s1 = text.index("use A and B")
+    e1 = s1 + len("use A and B")
+    s2 = text.index("A and B in the")  # overlaps [s1, e1)
+    e2 = s2 + len("A and B in the")
+    master = _write_master(tmp_path)
+    out = tmp_path / "out.sec"
+    answers = {
+        # deliberately listed loser-first: acceptance order must be by
+        # ascending start, not dict order
+        "ME@" + str(s2): {
+            "start": s2,
+            "end": e2,
+            "before": text[s2:e2],
+            "after": "LOSER",
+            "notes": "",
+        },
+        "ME@" + str(s1): {
+            "start": s1,
+            "end": e1,
+            "before": text[s1:e1],
+            "after": "WINNER",
+            "notes": "",
+        },
+    }
+    generate(master, {}, answers, out)
+    result = out.read_bytes().decode(secfile.ENCODING)
+    assert "WINNER" in result
+    assert "LOSER" not in result
+    unresolved_md = out.with_suffix(".unresolved.md").read_text(encoding="utf-8")
+    assert f"ME@{s2}" in unresolved_md
+    assert f"overlaps another text edit (ME@{s1})" in unresolved_md
+
+
 def test_revisions_wrap_edit_and_identities_hold(tmp_path):
     start, end = _span("use A and B")
     master = _write_master(tmp_path)

@@ -212,7 +212,6 @@ state.edits = state.edits || {};
 let activeId = null;
 let overrideIds = new Set();
 let meState = null;              // {s, e, id} while the edit card is open
-let staleEditsDropped = pruneStaleEdits();
 
 const ds = DATA.decisions.filter(d => !d.in_note && !d.plural);
 const byId = Object.fromEntries(ds.map(d => [d.id, d]));
@@ -220,6 +219,8 @@ const nPlural = DATA.decisions.filter(d => d.plural).length;
 const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 let dirty = false;
 const save = () => { dirty = true; localStorage.setItem(KEY, JSON.stringify(state)); };
+// after ds/byId: pruneStaleEdits -> meConflict reads ds and the profile
+let staleEditsDropped = pruneStaleEdits();
 
 function eff(d) {
   const own = state.answers[d.id];
@@ -476,7 +477,7 @@ function renderPanel() {
   if (!d) {
     const notice = staleEditsDropped
       ? `<div class="muted" style="margin-bottom:8px">${staleEditsDropped} text
-        edit(s) no longer matched this master and were dropped — see console.</div>`
+        edit(s) were stale or conflicting and were dropped — see console.</div>`
       : "";
     p.innerHTML = notice + `<div class="muted">Click any highlighted decision in the text
       to answer it here. Yellow = to answer, green = answered.</div>`;
@@ -623,11 +624,21 @@ function gotoPrev() {
 // ---- manual text edits (select-and-replace, tracked changes) ----
 function pruneStaleEdits() {
   let dropped = 0;
-  for (const [id, rec] of Object.entries(state.edits || {})) {
-    if (DATA.text.slice(rec.start, rec.end) !== rec.before) {
+  // ascending start: on overlap between imported edits, the first kept wins
+  const entries = Object.entries(state.edits || {})
+    .sort((a, b) => a[1].start - b[1].start);
+  for (const [id, rec] of entries) {
+    let why = null;
+    if (DATA.text.slice(rec.start, rec.end) !== rec.before)
+      why = "no longer matches this master";
+    else {
+      const conflict = meConflict(rec.start, rec.end, id);
+      if (conflict) why = "overlaps " + conflict;
+    }
+    if (why) {
       delete state.edits[id];
       dropped++;
-      console.warn("Dropped stale text edit " + id + ": no longer matches this master.");
+      console.warn("Dropped text edit " + id + ": " + why + ".");
     }
   }
   return dropped;
