@@ -63,10 +63,14 @@ button { font: inherit; border: 1px solid var(--line); background: var(--card);
 button:hover { border-color: var(--accent); }
 button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 
-#layout { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 18px;
+#layout { display: grid; grid-template-columns: 240px minmax(0, 1fr) 400px; gap: 18px;
   max-width: 1400px; margin: 0 auto; padding: 18px 22px 70px; }
+#layout.nonav { grid-template-columns: minmax(0,1fr) 400px; }
+#layout.nonav #navPanel { display: none; }
+@media (max-width: 1200px) { #navPanel { display: none; } #navPanel.open { display: block; } }
 @media (max-width: 900px) { #layout { grid-template-columns: 1fr; }
-  #side { position: static !important; max-height: none !important; } }
+  #side { position: static !important; max-height: none !important; }
+  #navPanel, #navPanel.open { display: none !important; } }
 
 #doc { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
   padding: 26px 30px; white-space: pre-wrap; font-size: 13.5px; line-height: 1.75;
@@ -92,6 +96,14 @@ button.primary { background: var(--accent); color: var(--accent-ink); border-col
 #side { position: sticky; top: 74px; align-self: start;
   max-height: calc(100vh - 96px); overflow-y: auto; display: flex;
   flex-direction: column; gap: 12px; }
+#navPanel { position: sticky; top: 74px; align-self: start;
+  max-height: calc(100vh - 96px); overflow-y: auto; }
+.navrow2 { font-size: 12.5px; cursor: pointer; border-radius: 6px; padding: 4px 8px; }
+.navrow2:hover { background: var(--bg); }
+.navrow2.active { background: var(--accent); color: var(--accent-ink); }
+.navnum { color: var(--muted); font-weight: 600; margin-right: 4px; }
+.navrow2.active .navnum { color: var(--accent-ink); }
+.navanchor { scroll-margin-top: 80px; }
 .panel { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
   padding: 14px 16px; }
 .panel h2 { font-size: 13px; margin: 0 0 8px; text-transform: uppercase;
@@ -149,9 +161,11 @@ footer.actions { position: fixed; bottom: 0; left: 0; right: 0; background: var(
   <div class="progress"><div class="bar"><i id="pBar"></i></div>
     <span class="count" id="pCount"></span></div>
   <button id="btnNext" class="primary">Next unanswered ↓</button>
+  <button id="btnNavToggle">Sections</button>
   <button id="btnView">Redline view: on</button>
 </header>
 <div id="layout">
+  <nav id="navPanel" class="panel"></nav>
   <div id="doc"></div>
   <aside id="side">
     <details class="panel profile" id="profilePanel" open>
@@ -175,9 +189,10 @@ const DATA = __DATA__;
 const PLURAL_KEY = __PLURAL_KEY__;
 const UNITS_KEY = __UNITS_KEY__;
 const KEY = "specgen:" + DATA.section + ":" + (DATA.revision || "");
-let state = { profile: {}, answers: {}, view: "redline" };
+let state = { profile: {}, answers: {}, view: "redline", navOpen: true };
 try { state = Object.assign(state, JSON.parse(localStorage.getItem(KEY) || "{}")); } catch (e) {}
 state.view = state.view || "redline";
+state.navOpen = state.navOpen === undefined ? true : state.navOpen;
 let activeId = null;
 let overrideIds = new Set();
 
@@ -261,6 +276,23 @@ function buildDoc() {
   const doc = document.getElementById("doc");
   const spans = activeSpans();
   const roots = spans.filter(sp => !sp.parent);
+  const anchors = (DATA.nav || [])
+    .map((n, i) => ({ c: n.char, i }))
+    .sort((a, b) => a.c - b.c);
+  for (const a of anchors)
+    for (const sp of roots)
+      if (a.c > sp.s && a.c < sp.e) { a.c = sp.s; break; }
+  let ai = 0;
+  const gapHtml = (from, to) => {
+    let html = "", pos = from;
+    while (ai < anchors.length && anchors[ai].c <= to) {
+      const a = anchors[ai];
+      const cut = Math.max(a.c, pos);
+      html += esc(DATA.text.slice(pos, cut)) + `<span class="navanchor" id="nav-${a.i}"></span>`;
+      pos = cut; ai++;
+    }
+    return html + esc(DATA.text.slice(pos, to));
+  };
   let html = "", pos = 0;
   const emit = (sp) => {
     const kids = spans.filter(k => k.parent === sp);
@@ -277,17 +309,28 @@ function buildDoc() {
     return state.view === "redline" ? `<s class="unitcut">${inner}</s>` : "";
   };
   for (const sp of roots) {
-    html += esc(DATA.text.slice(pos, sp.s));
+    html += gapHtml(pos, sp.s);
     html += emit(sp);
     pos = sp.e;
   }
-  html += esc(DATA.text.slice(pos));
+  html += gapHtml(pos, DATA.text.length);
   doc.innerHTML = html;
   doc.querySelectorAll("mark[data-id]").forEach(m => m.onclick = () => select(m.dataset.id, false));
   doc.querySelectorAll("mark.taicut").forEach(m => m.onclick = () => {
     alert("Tailoring block '" + m.dataset.opt + "' is removed by the Project Profile. Set it back to 'keep' to restore the text.");
   });
   ds.forEach(updateMark);
+}
+function renderNav() {
+  const nav = document.getElementById("navPanel");
+  nav.innerHTML = (DATA.nav || []).map((n, i) =>
+    `<div class="navrow2" data-i="${i}" style="padding-left:${8 + n.depth * 14}px">` +
+    `<span class="navnum">${esc(n.num)}</span> ${esc(n.title)}</div>`).join("");
+  nav.querySelectorAll(".navrow2").forEach(row => row.onclick = () => {
+    nav.querySelectorAll(".navrow2").forEach(r => r.classList.remove("active"));
+    row.classList.add("active");
+    document.getElementById("nav-" + row.dataset.i)?.scrollIntoView({ block: "start", behavior: "smooth" });
+  });
 }
 function updateMark(d) {
   const m = document.getElementById("mk-" + d.id);
@@ -535,6 +578,12 @@ function refresh() {
 
 // ---- header / footer actions ----
 document.getElementById("btnNext").onclick = gotoNextUnanswered;
+document.getElementById("btnNavToggle").onclick = () => {
+  state.navOpen = !state.navOpen;
+  document.getElementById("layout").classList.toggle("nonav", !state.navOpen);
+  document.getElementById("navPanel").classList.toggle("open", state.navOpen);
+  save();
+};
 document.getElementById("btnView").onclick = () => {
   state.view = state.view === "redline" ? "clean" : "redline";
   document.getElementById("btnView").textContent =
@@ -578,7 +627,8 @@ document.getElementById("fileImport").onchange = ev => {
 };
 document.getElementById("btnClear").onclick = () => {
   if (confirm("Clear every answer on this page?")) {
-    state = { profile: {}, answers: {}, view: state.view || "redline" }; overrideIds.clear();
+    state = { profile: {}, answers: {}, view: state.view || "redline",
+      navOpen: state.navOpen }; overrideIds.clear();
     save(); buildDoc(); renderPanel(); updateProgress(); renderProfile();
   }
 };
@@ -592,6 +642,9 @@ document.getElementById("hSub").textContent =
   (DATA.revision || DATA.date_code || "") +
   (DATA.umrl_date ? " · UMRL " + DATA.umrl_date : "") +
   " · answers autosave in this browser";
+document.getElementById("layout").classList.toggle("nonav", !state.navOpen);
+document.getElementById("navPanel").classList.toggle("open", state.navOpen);
+renderNav();
 buildDoc();
 renderProfile();
 document.getElementById("btnView").textContent =

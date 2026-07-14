@@ -78,3 +78,40 @@ def test_dirty_flag_and_beforeunload_nag(tmp_path):
 def test_profOpen_is_clamped(tmp_path):
     html = _page(tmp_path)
     assert "Math.max(0, profAll - Object.keys(state.profile).length)" in html
+
+
+NUMBERED = (
+    "<SEC><PRT>PART 1  <TTL>GENERAL</TTL><SPT =1.1>1.1  <TTL>REFERENCES</TTL>"
+    "body text</SPT></PRT></SEC>"
+)
+
+
+def test_manifest_nav_numbering_and_depth(tmp_path):
+    p = tmp_path / "nav.SEC"
+    p.write_bytes(NUMBERED.encode(secfile.ENCODING))
+    m = build_manifest(secfile.parse(p))
+    nav = m["nav"]
+    assert len(nav) == 2
+    assert nav[0]["num"] == "PART 1"
+    assert nav[0]["title"] == "GENERAL"
+    assert nav[0]["depth"] == 0
+    assert nav[1]["num"] == "1.1"
+    assert nav[1]["title"] == "REFERENCES"
+    assert nav[1]["depth"] == 1
+    assert isinstance(nav[0]["char"], int) and isinstance(nav[1]["char"], int)
+    assert nav[0]["char"] <= nav[1]["char"]
+
+
+def test_page_has_nav_panel_and_anchors(tmp_path):
+    html = _page(tmp_path)
+    assert 'id="navPanel"' in html
+    assert "btnNavToggle" in html
+    assert "navanchor" in html
+    assert "DATA.nav" in html
+
+
+def test_clear_preserves_nav_open(tmp_path):
+    html = _page(tmp_path)
+    # btnClear's reset must also carry navOpen forward, same lesson as
+    # state.view (see test_clear_preserves_view_mode).
+    assert "navOpen: state.navOpen" in html

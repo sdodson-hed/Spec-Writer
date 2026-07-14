@@ -51,16 +51,30 @@ def _title_of(el: Element) -> str:
     return _WS_RE.sub(" ", ttl.text()).strip() if ttl is not None else el.name
 
 
+_PART_NUM_RE = re.compile(r"PART\s+\d+", re.I)
+_SPT_NUM_RE = re.compile(r"=\s*([0-9][0-9.]*)")
+
+
 @dataclass
 class _LocSpan:
     start: int
     end: int
     title: str
     depth: int
+    num: str = ""
+
+
+def _location_num(child: Element) -> str:
+    if child.name == "SPT":
+        m = _SPT_NUM_RE.search(child.open_raw)
+        return m.group(1) if m else ""
+    snippet = _WS_RE.sub(" ", child.text()[:60])
+    m = _PART_NUM_RE.search(snippet)
+    return m.group(0) if m else ""
 
 
 def _location_index(root: Element) -> list[_LocSpan]:
-    """Source spans of PRT/SPT (with titles)."""
+    """Source spans of PRT/SPT (with titles and paragraph numbers)."""
     locs: list[_LocSpan] = []
 
     def walk(el: Element, depth: int) -> None:
@@ -69,7 +83,13 @@ def _location_index(root: Element) -> list[_LocSpan]:
                 continue
             if child.name in ("PRT", "SPT"):
                 locs.append(
-                    _LocSpan(child.src_start, child.src_end, _title_of(child), depth)
+                    _LocSpan(
+                        child.src_start,
+                        child.src_end,
+                        _title_of(child),
+                        depth,
+                        _location_num(child),
+                    )
                 )
                 walk(child, depth + 1)
             else:
@@ -88,6 +108,15 @@ def build_manifest(sec: SecFile) -> dict:
     root = sec.root
     groups, stream, _offs = scan_groups(sec.source)
     locs = _location_index(root)
+    nav = [
+        {
+            "num": s.num,
+            "title": s.title,
+            "depth": s.depth,
+            "char": bisect.bisect_left(_offs, s.start),
+        }
+        for s in locs
+    ]
 
     scn = root.first("SCN")
     stl = root.first("STL")
@@ -295,4 +324,5 @@ def build_manifest(sec: SecFile) -> dict:
         # full tag-free text of the section; char_start/char_end above index
         # into this, so a UI can show every decision in situ
         "text": stream,
+        "nav": nav,
     }
