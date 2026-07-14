@@ -26,6 +26,10 @@ _WS_RE = re.compile(r"\s+")
 _INVISIBLE_GAP_RE = re.compile(
     r"^(?:[ \t]|</?(?:SPT|TAI|MET|ENG)(?:\s[^>]*)?>)+$"
 )
+# "[; <SUB>G, [_____]</SUB>]" (G or S, optional <TAI> wrapping): the
+# submittal-classification idiom — keep/remove the reviewer flag and
+# fill in the reviewing office.
+_SUBREV_RE = re.compile(r"^;?\s*<SUB>\s*[GS]\b")
 
 
 @dataclass
@@ -184,6 +188,11 @@ def scan_groups(src: str) -> tuple[list[Group], str, list[int]]:
                     in_note=in_note,
                 )
             )
+            g = groups[-1]
+            if g.kind == "optional" and len(g.options) == 1:
+                raw_opt = src[g.options[0].src_start : g.options[0].src_end]
+                if _SUBREV_RE.match(raw_opt.strip()):
+                    g.kind = "submittal-review"
         else:
             i = group_char_start + 1
     return groups, text, offs

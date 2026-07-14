@@ -40,6 +40,7 @@ _KIND_FILL = {
     "choice": PatternFill("solid", fgColor="FFF2CC"),
     "blank": PatternFill("solid", fgColor="D9EAD3"),
     "optional": PatternFill("solid", fgColor="EAD1DC"),
+    "submittal-review": PatternFill("solid", fgColor="DDEBF7"),
 }
 
 README = """HOW TO FILL IN THIS WORKBOOK
@@ -105,6 +106,11 @@ def write_workbook(manifest: dict, out_path: Path | str) -> None:
             opts_display = "(fill in a value)"
         elif d["kind"] == "optional":
             opts_display = f"optional text: {_short(opts[0], 90)}"
+        elif d["kind"] == "submittal-review":
+            opts_display = (
+                "keep = Government-reviewed (G); in the HTML page you can also "
+                "set the reviewer office; delete = for-information-only"
+            )
         else:
             opts_display = "  |  ".join(
                 f"{i}) {_short(o, 55)}" for i, o in enumerate(opts, 1)
@@ -135,7 +141,7 @@ def write_workbook(manifest: dict, out_path: Path | str) -> None:
                 ws.cell(row=row, column=col).font = _DUP_FONT
         answer_cell = ws.cell(row=row, column=8)
         answer_cell.alignment = Alignment(wrap_text=True, vertical="top")
-        if d["kind"] == "optional":
+        if d["kind"] in ("optional", "submittal-review"):
             keep_del.add(answer_cell)
         elif d["kind"] == "choice":
             formula = '"' + ",".join(
@@ -205,8 +211,12 @@ def read_answers_json(path: Path | str) -> tuple[dict[str, str], dict[str, dict]
             notes = str(v.get("notes", "")).strip()
         else:
             ans, notes = str(v).strip(), ""
+        office = str(v.get("office", "")).strip() if isinstance(v, dict) else ""
         if ans or notes:
-            answers[str(gid).strip()] = {"answer": ans, "notes": notes}
+            rec = {"answer": ans, "notes": notes}
+            if office:
+                rec["office"] = office
+            answers[str(gid).strip()] = rec
     return profile, answers
 
 

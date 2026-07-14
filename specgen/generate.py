@@ -96,7 +96,9 @@ def generate(
         before = src[g.src_start : g.src_end]
         low = ans.lower()
 
-        if not ans or (low == "keep" and g.kind != "optional"):
+        if not ans or (
+            low == "keep" and g.kind not in ("optional", "submittal-review")
+        ):
             unresolved.append(
                 {
                     "id": g.gid,
@@ -124,6 +126,11 @@ def generate(
         elif low == "keep":  # optional: keep text, drop brackets
             after = src[g.options[0].src_start : g.options[0].src_end]
             action = "kept (brackets removed)"
+            if g.kind == "submittal-review" and entry.get("office"):
+                after = re.sub(
+                    r"\[[^][]*\]", lambda _m: entry["office"], after, count=1
+                )
+                action = f"kept; reviewer office = {entry['office']}"
         else:
             picked = _match_option(g.options, ans) if g.kind == "choice" else None
             if picked is not None:

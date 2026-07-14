@@ -101,6 +101,10 @@ def build_manifest(sec: SecFile) -> dict:
 
     dups = duplicate_map(groups)
     _BLOCK_TAGS = ("<OLI", "<ITM", "<LST", "<TXT", "<SPT")
+    sub_spans = [
+        (s.src_end, _WS_RE.sub(" ", s.text()).strip()) for s in root.iter("SUB")
+    ]
+    sub_spans.sort()
     decisions = []
     for g in groups:
         in_note = g.in_note
@@ -124,6 +128,14 @@ def build_manifest(sec: SecFile) -> dict:
                 "duplicate_of": dups.get(g.gid),
                 "hint": _hint(g.kind, context),
                 "context": context,
+                "label": (
+                    next(
+                        (t for e, t in reversed(sub_spans) if e <= g.src_start),
+                        "",
+                    )
+                    if g.kind == "submittal-review"
+                    else ""
+                ),
                 "offset": g.src_start,
                 "char_start": g.char_start,
                 "char_end": g.char_end,
@@ -190,9 +202,9 @@ def build_manifest(sec: SecFile) -> dict:
         if not any(a.name == "REF" for a in rid.ancestors()):
             used_ids.add(_WS_RE.sub(" ", rid.text()).strip())
 
-    kinds = {"choice": 0, "blank": 0, "optional": 0}
+    kinds: dict[str, int] = {}
     for d in decisions:
-        kinds[d["kind"]] += 1
+        kinds[d["kind"]] = kinds.get(d["kind"], 0) + 1
     body_decisions = [d for d in decisions if not d["in_note"]]
 
     return {
@@ -205,7 +217,7 @@ def build_manifest(sec: SecFile) -> dict:
             "bracket_groups_total": len(decisions),
             "bracket_groups_in_body": len(body_decisions),
             "bracket_groups_in_notes": len(decisions) - len(body_decisions),
-            **{f"kind_{k}": v for k, v in kinds.items()},
+            **{f"kind_{k}": v for k, v in sorted(kinds.items())},
             "tailoring_blocks": sum(v["blocks"] for v in tai_counts.values()),
             "notes_to_specifier": sum(1 for _ in root.iter("NTE")),
             "submittal_items": len(submittal_items),
