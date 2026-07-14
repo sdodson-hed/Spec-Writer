@@ -117,7 +117,7 @@ def _match_option(groups_options: list, ans: str) -> list[int] | None:
         idx = sorted({int(p) - 1 for p in parts})  # document order, deduped
         if all(0 <= i < len(groups_options) for i in idx):
             return idx
-        raise GenerateError(f"option number out of range: {ans!r}")
+        return None  # out of range: fall through to custom-text handling
     # exact (whitespace-normalized) text match against a single option
     norm = _WS_RE.sub(" ", ans).strip().lower()
     matches = [

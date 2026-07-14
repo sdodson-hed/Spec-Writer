@@ -132,3 +132,31 @@ def test_clear_preserves_nav_open(tmp_path):
     # btnClear's reset must also carry navOpen forward, same lesson as
     # state.view (see test_clear_preserves_view_mode).
     assert "navOpen: state.navOpen" in html
+
+
+def test_nav_has_collapse_all_and_expand_all_controls(tmp_path):
+    html = _page(tmp_path)
+    assert 'data-navall="collapse"' in html
+    assert 'data-navall="expand"' in html
+    assert "collapse all" in html
+    assert "expand all" in html
+
+
+def test_paranum_span_emitted_for_depth_gt_zero_anchors(tmp_path):
+    p_ = tmp_path / "nav.SEC"
+    p_.write_bytes(NAVSRC.encode(secfile.ENCODING))
+    out = tmp_path / "nav.html"
+    write_html(build_manifest(secfile.parse(p_)), out)
+    html = out.read_text(encoding="utf-8")
+    assert 'class="paranum"' in html
+    assert ".paranum {" in html  # CSS rule present
+
+
+def test_numeric_answer_in_range_guard_present(tmp_path):
+    # The "?" bug: an out-of-range digit answer must not be treated as an
+    # option reference. Every place that parses the option-number regex
+    # must also check the parsed indices are in range for the group.
+    html = _page(tmp_path)
+    assert "idx.every(i => i >= 0 && i < d.options.length)" in html
+    # resolvedText no longer falls back to "?" for an unmatched index
+    assert 'd.options[+n - 1] ?? "?"' not in html

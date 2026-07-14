@@ -113,6 +113,10 @@ button.primary { background: var(--accent); color: var(--accent-ink); border-col
 .navrow2.active .navnum { color: var(--accent-ink); }
 .navttl { overflow: hidden; text-overflow: ellipsis; }
 .navanchor { scroll-margin-top: 80px; }
+.paranum { font-weight: 700; margin-right: 8px; }
+.navall { font-size: 12px; color: var(--muted); padding: 0 8px 8px; }
+.navall a { color: var(--muted); cursor: pointer; }
+.navall a:hover { text-decoration: underline; }
 .panel { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
   padding: 14px 16px; }
 .panel h2 { font-size: 13px; margin: 0 0 8px; text-transform: uppercase;
@@ -221,6 +225,14 @@ function eff(d) {
   }
   return { a: "", from: null };
 }
+// A digit string is an option reference only when every number is in
+// range for this group's options; otherwise it is literal custom text
+// (e.g. typing "5" as a replacement on a 3-option group).
+function optionIdx(d, a) {
+  if (!(d.kind === "choice" && /^\d+(,\d+)*$/.test(a || ""))) return null;
+  const idx = a.split(",").map(n => +n - 1);
+  return idx.every(i => i >= 0 && i < d.options.length) ? idx : null;
+}
 function resolvedText(d, a) {
   if (a === "delete") return null;
   if (d.kind === "submittal-review" && a === "keep") {
@@ -228,9 +240,9 @@ function resolvedText(d, a) {
     return o ? d.options[0].replace(/\[[^\]]*\]/, o) : d.options[0];
   }
   if (a === "keep") return d.options[0];
-  if (d.kind === "choice" && /^\d+(,\d+)*$/.test(a))
-    return a.split(",").map(n => d.options[+n - 1] ?? "?").join(d.multi ? "\n" : " ");
-  return a;
+  const idx = optionIdx(d, a);
+  if (idx) return idx.map(i => d.options[i]).join(d.multi ? "\n" : " ");
+  return a;  // out-of-range digits (or non-numeric) = literal custom text
 }
 function setAnswer(id, val) {
   const cur = state.answers[id] || {};
@@ -297,7 +309,10 @@ function buildDoc() {
     while (ai < anchors.length && anchors[ai].c <= to) {
       const a = anchors[ai];
       const cut = Math.max(a.c, pos);
-      html += esc(DATA.text.slice(pos, cut)) + `<span class="navanchor" id="nav-${a.i}"></span>`;
+      const n = DATA.nav[a.i];
+      const num = n && n.depth > 0 && n.num
+        ? `<span class="paranum">${esc(n.num)}</span>` : "";
+      html += esc(DATA.text.slice(pos, cut)) + `<span class="navanchor" id="nav-${a.i}">${num}</span>`;
       pos = cut; ai++;
     }
     return html + esc(DATA.text.slice(pos, to));
@@ -334,10 +349,12 @@ let navCollapsed = new Set();
 function renderNav() {
   const nav = document.getElementById("navPanel");
   const items = DATA.nav || [];
+  const isBranch = i => i + 1 < items.length && items[i + 1].depth > items[i].depth;
   let html = `<div class="navroot">${esc(DATA.section)}</div>`;
+  html += `<div class="navall"><a data-navall="collapse">collapse all</a> · ` +
+    `<a data-navall="expand">expand all</a></div>`;
   html += items.map((n, i) => {
-    const isBranch = i + 1 < items.length && items[i + 1].depth > n.depth;
-    const twist = isBranch
+    const twist = isBranch(i)
       ? `<span class="navtwist" data-twist="${i}">${navCollapsed.has(i) ? "▸" : "▾"}</span>`
       : `<span class="navtwist"></span>`;
     return `<div class="navrow2 d${n.depth}" data-i="${i}" style="--nd:${n.depth}" title="${esc(n.title)}">` +
@@ -357,6 +374,12 @@ function renderNav() {
     nav.querySelectorAll(".navrow2").forEach(r => r.classList.remove("active"));
     row.classList.add("active");
     document.getElementById("nav-" + row.dataset.i)?.scrollIntoView({ block: "start", behavior: "smooth" });
+  });
+  nav.querySelectorAll("[data-navall]").forEach(a => a.onclick = () => {
+    navCollapsed = a.dataset.navall === "collapse"
+      ? new Set(items.map((n, i) => i).filter(isBranch))
+      : new Set();
+    renderNav();
   });
 }
 function applyNavCollapse() {
@@ -471,7 +494,8 @@ function renderPanel() {
       placeholder="reviewer office (e.g. AE) — optional"
       value="${esc(own.office || "")}"><button data-act="setoffice">Set</button></div>`;
   } else if (d.kind === "choice" && d.multi) {
-    const picked = new Set(/^\d+(,\d+)*$/.test(e.a) ? e.a.split(",") : []);
+    const eIdx = optionIdx(d, e.a);
+    const picked = new Set(eIdx ? eIdx.map(i => String(i + 1)) : []);
     h += `<div class="hint">Select all that apply — these are independent items,
       keep any combination.</div>`;
     h += `<div class="opts">` + d.options.map((o, i) =>
@@ -503,7 +527,8 @@ function renderPanel() {
   p.querySelectorAll(".opts button[data-multi]").forEach(b =>
     b.onclick = () => {
       const cur = eff(d).a;
-      const picked = new Set(/^\d+(,\d+)*$/.test(cur) ? cur.split(",") : []);
+      const curIdx = optionIdx(d, cur);
+      const picked = new Set(curIdx ? curIdx.map(i => String(i + 1)) : []);
       const v = b.dataset.multi;
       picked.has(v) ? picked.delete(v) : picked.add(v);
       const val = [...picked].map(Number).sort((a, b2) => a - b2).join(",");
@@ -539,7 +564,7 @@ function nestedTag(o) {
 }
 function freeform(d, e, ph) {
   const custom = e.a && !["keep", "delete"].includes(e.a) &&
-    !(d.kind === "choice" && /^\d+(,\d+)*$/.test(e.a)) ? e.a : "";
+    !optionIdx(d, e.a) ? e.a : "";
   return `<div class="freeform"><input type="text" data-custom placeholder="${ph}"
     value="${esc(custom)}"><button data-act="apply">Set</button></div>`;
 }
