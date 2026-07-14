@@ -21,6 +21,11 @@ from .secfile import _parse_tag
 
 _BLANK_RE = re.compile(r"^[\s_]*_[\s_]*$")
 _WS_RE = re.compile(r"\s+")
+# Tags that are invisible in the rendered section: a gap made only of these
+# (and spaces/tabs) leaves two bracket spans visually adjacent — one choice.
+_INVISIBLE_GAP_RE = re.compile(
+    r"^(?:[ \t]|</?(?:SPT|TAI|MET|ENG)(?:\s[^>]*)?>)+$"
+)
 
 
 @dataclass
@@ -150,11 +155,12 @@ def scan_groups(src: str) -> tuple[list[Group], str, list[int]]:
             # adjacent = next '[' with ONLY spaces/tabs between them in the
             # RAW source too (no markup) — a tag between bracket spans means
             # they belong to different structural elements
+            gap = src[offs[end - 1] + 1 : offs[k]] if k < n else ""
             if (
                 k < n
                 and text[k] == "["
                 and mask[k] == in_note
-                and src[offs[end - 1] + 1 : offs[k]].strip(" \t") == ""
+                and (gap.strip(" \t") == "" or _INVISIBLE_GAP_RE.match(gap))
             ):
                 i = k
             else:
