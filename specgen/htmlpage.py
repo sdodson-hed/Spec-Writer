@@ -21,6 +21,208 @@ from pathlib import Path
 
 from .answers import PLURAL_KEY, UNITS_KEY
 
+# Pure edit-core: the run model behind inline editing. DOM-free by design so
+# it is unit-testable under Node (tests/test_edit_core.py). Injected into
+# _TEMPLATE at __EDIT_CORE__.
+EDIT_CORE_JS = r"""
+// ---- inline edit core (pure; no DOM, no globals) ----
+// Runs {t:"o"|"d"|"i", text}: original kept, deleted original, inserted.
+// Invariant: concatenated o+d texts === text.slice(s, e).
+// "Display offsets" index the concatenation of ALL run texts (the visible
+// redline text). Records are the ME@ format: {start,end,before,after,notes}
+// in original-text offsets; insertion-only records have start === end.
+function gapRuns(text, records, s, e) {
+  const recs = Object.values(records || {})
+    .filter(r => r.start >= s && r.end <= e)
+    .sort((a, b) => a.start - b.start);
+  const runs = [];
+  let pos = s;
+  for (const r of recs) {
+    if (r.start > pos) runs.push({ t: "o", text: text.slice(pos, r.start) });
+    if (r.before) runs.push({ t: "d", text: r.before });
+    if (r.after) runs.push({ t: "i", text: r.after });
+    pos = r.end;
+  }
+  if (pos < e) runs.push({ t: "o", text: text.slice(pos, e) });
+  return runs;
+}
+function mergeRuns(runs) {
+  const out = [];
+  for (const r of runs) {
+    if (!r.text) continue;
+    const top = out[out.length - 1];
+    if (top && top.t === r.t) top.text += r.text;
+    else out.push({ t: r.t, text: r.text });
+  }
+  return out;
+}
+function splitRuns(runs, at) {
+  const L = [], R = [];
+  let pos = 0;
+  for (const r of runs) {
+    const end = pos + r.text.length;
+    if (end <= at) L.push({ t: r.t, text: r.text });
+    else if (pos >= at) R.push({ t: r.t, text: r.text });
+    else {
+      L.push({ t: r.t, text: r.text.slice(0, at - pos) });
+      R.push({ t: r.t, text: r.text.slice(at - pos) });
+    }
+    pos = end;
+  }
+  return [L, R];
+}
+function runsToRecords(runs, gapStart, oldRecords) {
+  const recs = {};
+  let orig = gapStart, i = 0;
+  while (i < runs.length) {
+    if (runs[i].t === "o") { orig += runs[i].text.length; i++; continue; }
+    const start = orig;
+    let before = "", after = "";
+    while (i < runs.length && runs[i].t !== "o") {
+      if (runs[i].t === "d") { before += runs[i].text; orig += runs[i].text.length; }
+      else after += runs[i].text;
+      i++;
+    }
+    if (before === after) continue;   // typed-then-erased no-op
+    const rec = { start, end: orig, before, after, notes: "" };
+    for (const old of Object.values(oldRecords || {}))
+      if (old.notes && old.start === start && old.before === before)
+        rec.notes = old.notes;
+    recs["ME@" + start] = rec;
+  }
+  return recs;
+}
+function origToDisplay(runs, gapStart, origOff) {
+  let disp = 0, orig = gapStart;
+  for (const r of runs) {
+    if (r.t === "i") { disp += r.text.length; continue; }
+    if (origOff <= orig + r.text.length) return disp + (origOff - orig);
+    orig += r.text.length;
+    disp += r.text.length;
+  }
+  return disp;
+}
+function displayToOrig(runs, gapStart, at) {
+  // original offset at display position `at` (i chars are zero-width)
+  let disp = 0, orig = gapStart;
+  for (const r of runs) {
+    const end = disp + r.text.length;
+    if (at <= end) {
+      if (r.t === "i") return orig;
+      return orig + (at - disp);
+    }
+    disp = end;
+    if (r.t !== "i") orig += r.text.length;
+  }
+  return orig;
+}
+function deleteTarget(runs, caret, dir) {
+  // The single display char a collapsed Backspace (dir -1) / Delete (dir +1)
+  // affects, skipping already-struck chars; null at the gap boundary.
+  const types = [];
+  for (const r of runs)
+    for (let k = 0; k < r.text.length; k++) types.push(r.t);
+  let i = dir < 0 ? caret - 1 : caret;
+  while (i >= 0 && i < types.length && types[i] === "d") i += dir;
+  if (i < 0 || i >= types.length) return null;
+  return { from: i, to: i + 1 };
+}
+function skipDel(runs, at) {
+  // an insertion point strictly inside a struck run moves to its end, so
+  // replacement text always follows its strikethrough
+  let pos = 0;
+  for (const r of runs) {
+    const end = pos + r.text.length;
+    if (r.t === "d" && at > pos && at < end) return end;
+    pos = end;
+  }
+  return at;
+}
+function insLead(runs, at) {
+  // i chars in the caret's cluster strictly before display `at` (clusters
+  // are maximal d/i stretches; an o run resets the count)
+  let disp = 0, lead = 0;
+  for (const r of runs) {
+    const end = disp + r.text.length;
+    if (r.t === "o" && end <= at) lead = 0;
+    if (r.t === "i" && at > disp) lead += Math.min(at, end) - disp;
+    if (end >= at) break;
+    disp = end;
+  }
+  return lead;
+}
+function opBlocked(runs, gapStart, lockedOrig, from, to) {
+  const a = displayToOrig(runs, gapStart, from);
+  const b = displayToOrig(runs, gapStart, to);
+  for (const [ls, le] of lockedOrig || []) {
+    if (from === to ? a > ls && a < le : a < le && b > ls) return true;
+  }
+  return false;
+}
+function applyGapOp(text, records, s, e, op, lockedOrig) {
+  let runs = gapRuns(text, records, s, e);
+  const dispLen = runs.reduce((n, r) => n + r.text.length, 0);
+  let from, to, ins = "";
+  if (op.kind === "ins") { from = to = skipDel(runs, op.at); ins = op.text; }
+  else if (op.kind === "replace") { from = op.from; to = op.to; ins = op.text; }
+  else if (op.kind === "del") { from = op.from; to = op.to; }
+  else {
+    const t = deleteTarget(runs, op.caret, op.kind === "bs" ? -1 : 1);
+    if (!t) return null;
+    from = t.from; to = t.to;
+  }
+  if (from > to) { const x = from; from = to; to = x; }
+  if (from < 0 || to > dispLen) return null;
+  if (opBlocked(runs, s, lockedOrig, from, to)) return { blocked: true };
+  // 1) strike/remove the selected range
+  let struckEnd = from, struckNew = false;
+  if (to > from) {
+    const [L, MR] = splitRuns(runs, from);
+    const [M, R] = splitRuns(MR, to - from);
+    const mid = M.filter(r => r.t !== "i").map(r => ({ t: "d", text: r.text }));
+    struckNew = mid.length > 0;
+    struckEnd = from + mid.reduce((n, r) => n + r.text.length, 0);
+    runs = mergeRuns([].concat(L, mid, R));
+  }
+  // 2) insert after the strikethrough
+  let insAt = struckEnd, lead = 0;
+  if (ins) {
+    insAt = skipDel(runs, insAt);
+    lead = insLead(runs, insAt);
+    const [L2, R2] = splitRuns(runs, insAt);
+    runs = mergeRuns([].concat(L2, [{ t: "i", text: ins }], R2));
+  }
+  const recs = runsToRecords(runs, s, records);
+  // 3) caret in CANONICAL display space (records render d-then-i per cluster)
+  let caret;
+  if (!ins && !struckNew) {
+    // pure removal of previously-inserted text with no new strikethrough:
+    // nothing shifts left of the cut point, so it's still the caret
+    caret = from;
+  } else {
+    const canon = gapRuns(text, recs, s, e);
+    const opOrig = displayToOrig(runs, s, ins ? insAt : from);
+    const cluster = Object.values(recs)
+      .find(r => r.start <= opOrig && opOrig <= r.end);
+    if (!cluster) {
+      caret = origToDisplay(canon, s, opOrig);
+    } else {
+      // display start of the cluster's strikethrough
+      let dispStart = 0, orig = s;
+      for (const r of canon) {
+        if (orig === cluster.start && (r.t === "d" || r.t === "i")) break;
+        dispStart += r.text.length;
+        if (r.t !== "i") orig += r.text.length;
+      }
+      if (ins) caret = dispStart + cluster.before.length + lead + ins.length;
+      else if (op.kind === "bs") caret = dispStart;
+      else caret = dispStart + cluster.before.length;
+    }
+  }
+  return { records: recs, caret };
+}
+"""
+
 _TEMPLATE = r"""<!doctype html>
 <html lang="en">
 <head>
@@ -217,6 +419,7 @@ const ds = DATA.decisions.filter(d => !d.in_note && !d.plural);
 const byId = Object.fromEntries(ds.map(d => [d.id, d]));
 const nPlural = DATA.decisions.filter(d => d.plural).length;
 const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+__EDIT_CORE__
 let dirty = false;
 const save = () => { dirty = true; localStorage.setItem(KEY, JSON.stringify(state)); };
 // after ds/byId: pruneStaleEdits -> meConflict reads ds and the profile
@@ -892,5 +1095,6 @@ def write_html(manifest: dict, out_path: Path | str) -> None:
         .replace("__DATA__", data)
         .replace("__PLURAL_KEY__", json.dumps(PLURAL_KEY))
         .replace("__UNITS_KEY__", json.dumps(UNITS_KEY))
+        .replace("__EDIT_CORE__", EDIT_CORE_JS)
     )
     Path(out_path).write_text(html, encoding="utf-8")
