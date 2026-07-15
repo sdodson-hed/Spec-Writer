@@ -183,6 +183,58 @@ def test_revisions_wrap_edit_and_identities_hold(tmp_path):
     assert revert_revisions(rev) == SRC
 
 
+def test_inline_edit_export_shape_generates_with_revisions(tmp_path):
+    # An answers payload shaped exactly like the page's Export: bracket
+    # answers and ME@ records in one dict, including an insertion-only
+    # record (start == end, before == "") from inline typing.
+    from specgen.generate import generate, resolve_revisions, revert_revisions
+    from specgen import secfile
+    from specgen.manifest import build_manifest
+
+    src = "<SEC><TXT>Provide [scroll][screw] compressors for the plant.</TXT></SEC>"
+    p = tmp_path / "m.SEC"
+    p.write_bytes(src.encode(secfile.ENCODING))
+    m = build_manifest(secfile.parse(p))
+    text = m["text"]
+    gid = next(d["id"] for d in m["decisions"] if d["kind"] == "choice")
+
+    # strike " for the plant" and insert " (Building 1401)" after "compressors"
+    anchor = text.index(" for the plant")
+    answers = {
+        gid: {"answer": "1"},
+        f"ME@{anchor}": {
+            "start": anchor,
+            "end": anchor + len(" for the plant"),
+            "before": " for the plant",
+            "after": " (Building 1401)",
+            "notes": "sanity edit",
+        },
+    }
+    out = tmp_path / "out.sec"
+    summary = generate(p, {}, answers, out, revisions=True)
+    got = out.read_bytes().decode(secfile.ENCODING)
+    assert "scroll compressors (Building 1401)" in got
+    assert "for the plant" not in got
+    rev = (tmp_path / "out.revisions.sec").read_bytes().decode(secfile.ENCODING)
+    assert resolve_revisions(rev) == got
+    assert revert_revisions(rev) == src
+    assert summary["unresolved"] == 0
+
+    # insertion-only record (start == end): typed text with nothing deleted
+    ins_at = text.index(" compressors")
+    answers2 = {
+        gid: {"answer": "2"},
+        f"ME@{ins_at}": {
+            "start": ins_at, "end": ins_at, "before": "",
+            "after": ",", "notes": "",
+        },
+    }
+    out2 = tmp_path / "out2.sec"
+    generate(p, {}, answers2, out2, revisions=True)
+    got2 = out2.read_bytes().decode(secfile.ENCODING)
+    assert "screw, compressors" in got2
+
+
 def test_read_answers_json_me_passthrough_and_malformed_skip(tmp_path):
     p = tmp_path / "a.json"
     p.write_text(

@@ -150,12 +150,14 @@ def _invalid_edit_reason(
         start, end = int(edit.get("start")), int(edit.get("end"))
     except (TypeError, ValueError):
         return "manual edit has a non-numeric start/end"
-    if not (0 <= start < end <= len(stream)):
+    if not (0 <= start <= end <= len(stream)):
         return "manual edit start/end is out of range for this master"
+    if start == end and str(edit.get("before", "")):
+        return "zero-length manual edit carries deleted text"
     before = str(edit.get("before", ""))
     if stream[start:end] != before:
         return "selected text no longer matches this master (before mismatch)"
-    if offs[end - 1] - offs[start] != end - 1 - start:
+    if end > start and offs[end - 1] - offs[start] != end - 1 - start:
         return "selection crosses structural markup"
     for g in groups:
         if start < g.char_end and end > g.char_start:

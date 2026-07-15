@@ -46,6 +46,11 @@ python scripts/build_project.py <dir> <masters...>   # per-project batch + index
    workbook for engineers who prefer a spreadsheet. Both cover: choices,
    blanks, optionals, duplicate propagation, and a Project Profile block
    (tailoring keep/remove, plural [s] markers).
+   The page also has an Edit mode: click Edit and type directly in the
+   document like a tracked-changes Word doc — insertions show green,
+   deletions show red strikethrough, and every change exports as an ME@
+   record that `generate` applies and `--revisions` renders as native
+   SpecsIntact ADD/DEL markup.
 2. An engineer — or, later, the Hedral platform — fills in the answers.
 3. `generate` accepts either the .xlsx or the exported .json (they are
    provably equivalent) and applies them: resolves brackets, strips removed
