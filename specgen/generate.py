@@ -229,11 +229,23 @@ def generate(
             continue
         accepted_spans.append((start, end, key))
         after_plain = str(edit.get("after", ""))
+        # A zero-width insertion (end == start) must splice a zero-width source
+        # range at offs[start]; the old src_end = offs[end-1]+1 = offs[start-1]+1
+        # inverts the range (duplicating stripped markup) whenever stream chars
+        # start-1 and start are not source-contiguous, and points at end-of-text
+        # when start == 0. At end-of-text (start == len(stream)) offs[start] is
+        # out of range, so splice just past the last stream char (before any
+        # trailing markup) — the source position analogous to offs[start].
+        src_at_start = (
+            offs[start]
+            if start < len(offs)
+            else (offs[-1] + 1 if offs else len(src))
+        )
         valid_edits.append(
             {
                 "id": key,
-                "src_start": offs[start],
-                "src_end": offs[end - 1] + 1,
+                "src_start": src_at_start,
+                "src_end": src_at_start if end == start else offs[end - 1] + 1,
                 "before": str(edit.get("before", "")),
                 "after_plain": after_plain,
                 "after_esc": _escape_manual_edit_text(after_plain),

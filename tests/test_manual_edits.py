@@ -235,6 +235,61 @@ def test_inline_edit_export_shape_generates_with_revisions(tmp_path):
     assert "screw, compressors" in got2
 
 
+def test_insertion_after_stripped_markup_does_not_duplicate(tmp_path):
+    # The insertion point sits immediately after <BRK/> (stripped from the
+    # stream), so stream chars start-1 (".") and start ("A") are NOT
+    # source-contiguous. A zero-width insertion (start == end, before == "")
+    # must splice a zero-width source range at offs[start]; the buggy
+    # src_end = offs[start-1]+1 inverts the range and duplicates <BRK/>.
+    text, _offs = _stream()
+    start = text.index("Additional")
+    master = _write_master(tmp_path)
+    out = tmp_path / "out.sec"
+    answers = {
+        "BRK-0001": {"answer": "1", "notes": ""},
+        "ME@" + str(start): {
+            "start": start,
+            "end": start,
+            "before": "",
+            "after": "INSERTEDMARK ",
+            "notes": "",
+        },
+    }
+    generate(master, {}, answers, out, revisions=True)
+    clean = out.read_bytes().decode(secfile.ENCODING)
+    assert clean.count("INSERTEDMARK ") == 1
+    assert clean.count("<BRK/>") == 1  # markup not duplicated
+    assert "<BRK/>INSERTEDMARK Additional" in clean  # lands right before "Additional"
+    rev = out.with_suffix(".revisions.sec").read_bytes().decode(secfile.ENCODING)
+    assert resolve_revisions(rev) == clean
+    assert revert_revisions(rev) == SRC
+
+
+def test_insertion_at_index_zero(tmp_path):
+    # ME@0 insertion: start == end == 0, before == "". The buggy
+    # src_end = offs[-1]+1 points at end-of-text -> catastrophic deletion.
+    master = _write_master(tmp_path)
+    out = tmp_path / "out.sec"
+    answers = {
+        "BRK-0001": {"answer": "1", "notes": ""},
+        "ME@0": {
+            "start": 0,
+            "end": 0,
+            "before": "",
+            "after": "INSERTEDZERO ",
+            "notes": "",
+        },
+    }
+    generate(master, {}, answers, out, revisions=True)
+    clean = out.read_bytes().decode(secfile.ENCODING)
+    assert clean.count("INSERTEDZERO ") == 1
+    assert "<TXT>INSERTEDZERO Provide" in clean  # lands at very start of the text
+    assert "Provide scroll compressors" in clean  # nothing deleted
+    rev = out.with_suffix(".revisions.sec").read_bytes().decode(secfile.ENCODING)
+    assert resolve_revisions(rev) == clean
+    assert revert_revisions(rev) == SRC
+
+
 def test_read_answers_json_me_passthrough_and_malformed_skip(tmp_path):
     p = tmp_path / "a.json"
     p.write_text(
