@@ -217,6 +217,33 @@ def test_prune_stale_edits_also_drops_conflicting_imports(tmp_path):
     assert "meConflict(" in body
 
 
+def test_edit_mode_hooks_present(tmp_path):
+    html = _page(tmp_path)
+    assert 'id="btnEdit"' in html
+    assert 'addEventListener("beforeinput"' in html
+    assert "contenteditable" in html
+    assert "spellcheck" in html
+    assert "insertParagraph" in html      # Enter inserts a literal newline
+    assert "insertFromPaste" in html      # paste is plain-text only
+    assert "deleteByCut" in html
+    assert "showHint" in html
+    assert "editUndo" in html and "editRedo" in html
+
+
+def test_edit_mode_forces_redline_view(tmp_path):
+    html = _page(tmp_path)
+    body = html.split('id="btnEdit"')[0]  # anywhere is fine; assert on JS
+    assert 'state.view = "redline"' in html
+    assert "btnView\").disabled = editMode" in html.replace("'", '"')
+
+
+def test_edit_ops_check_locked_ranges(tmp_path):
+    html = _page(tmp_path)
+    body = html.split("function applyDocOp(")[1].split("\nfunction ")[0]
+    assert "lockedOrigIn(" in body
+    assert "blocked" in body
+
+
 def test_gap_anchor_render_is_deduped_and_clamped(tmp_path):
     # A nav anchor whose offset falls strictly inside a manual edit's
     # original span [r.start, r.end) must not be silently dropped: gapInner's

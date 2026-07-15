@@ -371,6 +371,12 @@ button.primary { background: var(--accent); color: var(--accent-ink); border-col
 details.profile summary { cursor: pointer; font-size: 13px; font-weight: 600;
   color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
 
+#editHint { position: fixed; bottom: 64px; left: 50%; transform: translateX(-50%);
+  background: var(--ink); color: var(--bg); font-size: 12.5px; padding: 7px 14px;
+  border-radius: 99px; opacity: 0; pointer-events: none; transition: opacity .2s;
+  z-index: 20; }
+#editHint.show { opacity: .92; }
+
 footer.actions { position: fixed; bottom: 0; left: 0; right: 0; background: var(--card);
   border-top: 1px solid var(--line); padding: 9px 22px; display: flex; gap: 10px;
   justify-content: center; z-index: 10; }
@@ -387,6 +393,7 @@ footer.actions { position: fixed; bottom: 0; left: 0; right: 0; background: var(
     <span class="count" id="pCount"></span></div>
   <button id="btnNext" class="primary">Next unanswered ↓</button>
   <button id="btnNavToggle">Sections</button>
+  <button id="btnEdit">Edit: off</button>
   <button id="btnView">Redline view: on</button>
 </header>
 <div id="layout">
@@ -534,11 +541,18 @@ function computeDocAnchors(roots) {
     }
   docAnchors = anchors;
 }
+const lockedOrigMemo = new Map();  // safe: DATA.decisions never changes
 function lockedOrigIn(s, e) {
-  return DATA.decisions
-    .filter(d => (d.in_note || d.plural) && d.char_start >= s && d.char_end <= e)
-    .map(d => [d.char_start, d.char_end])
-    .sort((a, b) => a[0] - b[0]);
+  const key = s + ":" + e;
+  let v = lockedOrigMemo.get(key);
+  if (!v) {
+    v = DATA.decisions
+      .filter(d => (d.in_note || d.plural) && d.char_start >= s && d.char_end <= e)
+      .map(d => [d.char_start, d.char_end])
+      .sort((a, b) => a[0] - b[0]);
+    lockedOrigMemo.set(key, v);
+  }
+  return v;
 }
 function origHtml(gapStart, a, b, emitted, rec) {
   // original text slice [a,b) with nav anchors and locked-span tints.
@@ -974,6 +988,191 @@ function renderMeCard(p) {
   };
 }
 
+// ---- edit mode (Word-like typing with live tracked changes) ----
+let editUndo = [], editRedo = [];
+let hintTimer = null;
+function showHint(msg) {
+  let el = document.getElementById("editHint");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "editHint";
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.classList.add("show");
+  clearTimeout(hintTimer);
+  hintTimer = setTimeout(() => el.classList.remove("show"), 1800);
+}
+function textLenNoAnchors(n) {
+  if (n.nodeType === 3)
+    return n.parentElement && n.parentElement.closest(".navanchor")
+      ? 0 : n.textContent.length;
+  if (n.classList && n.classList.contains("navanchor")) return 0;
+  let sum = 0;
+  for (const c of n.childNodes) sum += textLenNoAnchors(c);
+  return sum;
+}
+function dispOffset(gapEl, node, off) {
+  // display offset of (node, off) within the gap, skipping anchor content
+  if (node.nodeType !== 3) {
+    let sum = 0;
+    const el = node;
+    if (!gapEl.contains(el)) return null;
+    for (let i = 0; i < off && i < el.childNodes.length; i++)
+      sum += textLenNoAnchors(el.childNodes[i]);
+    // add everything before `el` inside the gap
+    let n2 = el;
+    while (n2 !== gapEl) {
+      let sib = n2.previousSibling;
+      while (sib) { sum += textLenNoAnchors(sib); sib = sib.previousSibling; }
+      n2 = n2.parentNode;
+    }
+    return sum;
+  }
+  if (node.parentElement.closest(".navanchor")) return null;
+  let sum = off, n2 = node;
+  while (n2 !== gapEl) {
+    let sib = n2.previousSibling;
+    while (sib) { sum += textLenNoAnchors(sib); sib = sib.previousSibling; }
+    n2 = n2.parentNode;
+    if (!n2) return null;
+  }
+  return sum;
+}
+function setCaretAt(gapEl, disp) {
+  const sel = window.getSelection();
+  const place = (node, off) => {
+    const r = document.createRange();
+    r.setStart(node, off);
+    r.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(r);
+  };
+  const walker = document.createTreeWalker(gapEl, NodeFilter.SHOW_TEXT);
+  let n, pos = 0, last = null;
+  while ((n = walker.nextNode())) {
+    if (n.parentElement.closest(".navanchor")) continue;
+    const len = n.textContent.length;
+    if (disp <= pos + len) { place(n, disp - pos); return; }
+    pos += len;
+    last = n;
+  }
+  if (last) place(last, last.textContent.length);
+  else place(gapEl, 0);   // gap rendered no editable text (e.g. undo emptied it)
+}
+function selCtx() {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0) return null;
+  const r = sel.getRangeAt(0);
+  const gapEl = (r.startContainer.nodeType === 1 ? r.startContainer
+    : r.startContainer.parentElement).closest(".gap");
+  const gapEl2 = (r.endContainer.nodeType === 1 ? r.endContainer
+    : r.endContainer.parentElement).closest(".gap");
+  if (!gapEl || gapEl !== gapEl2) return null;
+  const a = dispOffset(gapEl, r.startContainer, r.startOffset);
+  const b = dispOffset(gapEl, r.endContainer, r.endOffset);
+  if (a == null || b == null) return null;
+  return { gap: gapEl, s: +gapEl.dataset.s, e: +gapEl.dataset.e,
+           from: Math.min(a, b), to: Math.max(a, b) };
+}
+function editsIn(s, e) {
+  const out = {};
+  for (const [k, r] of Object.entries(state.edits))
+    if (r.start >= s && r.end <= e) out[k] = r;
+  return out;
+}
+function replaceEditsIn(s, e, recs) {
+  for (const [k, r] of Object.entries(state.edits))
+    if (r.start >= s && r.end <= e) delete state.edits[k];
+  Object.assign(state.edits, recs);
+}
+function applyDocOp(ctx, op) {
+  const before = editsIn(ctx.s, ctx.e);
+  const res = applyGapOp(DATA.text, state.edits, ctx.s, ctx.e, op,
+    lockedOrigIn(ctx.s, ctx.e));
+  if (!res) return;
+  if (res.blocked) {
+    showHint("That text is locked — brackets are answered from the panel.");
+    return;
+  }
+  replaceEditsIn(ctx.s, ctx.e, res.records);
+  editUndo.push({ s: ctx.s, e: ctx.e, before,
+    after: editsIn(ctx.s, ctx.e), caretBefore: ctx.from, caretAfter: res.caret });
+  if (editUndo.length > 100) editUndo.shift();
+  editRedo = [];
+  save();
+  renderGap(ctx.gap);
+  setCaretAt(ctx.gap, res.caret);
+  updateProgress();
+}
+function onBeforeInput(ev) {
+  if (!editMode) return;
+  ev.preventDefault();
+  const ctx = selCtx();
+  if (!ctx) {
+    showHint("Edit one text region at a time — brackets are answered from the panel.");
+    return;
+  }
+  const it = ev.inputType;
+  let op = null;
+  if (it === "insertText" || it === "insertParagraph" ||
+      it === "insertLineBreak" || it === "insertFromPaste") {
+    const text = it === "insertParagraph" || it === "insertLineBreak" ? "\n"
+      : it === "insertFromPaste"
+        ? ((ev.dataTransfer && ev.dataTransfer.getData("text/plain")) || "")
+        : (ev.data || "");
+    if (!text) return;
+    op = ctx.from < ctx.to
+      ? { kind: "replace", from: ctx.from, to: ctx.to, text }
+      : { kind: "ins", at: ctx.from, text };
+  } else if (it === "deleteContentBackward") {
+    op = ctx.from < ctx.to ? { kind: "del", from: ctx.from, to: ctx.to }
+                           : { kind: "bs", caret: ctx.from };
+  } else if (it === "deleteContentForward") {
+    op = ctx.from < ctx.to ? { kind: "del", from: ctx.from, to: ctx.to }
+                           : { kind: "fwd", caret: ctx.from };
+  } else if (it === "deleteByCut" || it === "deleteByDrag") {
+    if (ctx.from < ctx.to) op = { kind: "del", from: ctx.from, to: ctx.to };
+  }
+  if (op) applyDocOp(ctx, op);
+}
+document.getElementById("doc").addEventListener("beforeinput", onBeforeInput);
+document.addEventListener("keydown", ev => {
+  if (!editMode || !(ev.ctrlKey || ev.metaKey)) return;
+  const tag = ev.target && ev.target.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA") return;  // panel inputs keep native undo
+  const key = (ev.key || "").toLowerCase();
+  if (key !== "z" && key !== "y") return;
+  ev.preventDefault();
+  const redo = key === "y" || (key === "z" && ev.shiftKey);
+  const stack = redo ? editRedo : editUndo;
+  const other = redo ? editUndo : editRedo;
+  const step = stack.pop();
+  if (!step) return;
+  other.push(step);
+  replaceEditsIn(step.s, step.e, redo ? step.after : step.before);
+  save();
+  const gapEl = document.querySelector(`.gap[data-s="${step.s}"]`);
+  if (gapEl) {
+    renderGap(gapEl);
+    setCaretAt(gapEl, redo ? step.caretAfter : step.caretBefore);
+  }
+  updateProgress();
+});
+document.getElementById("btnEdit").onclick = () => {
+  editMode = !editMode;
+  if (editMode && state.view !== "redline") {
+    state.view = "redline";
+    document.getElementById("btnView").textContent = "Redline view: on";
+    save();
+  }
+  document.getElementById("btnView").disabled = editMode;
+  const b = document.getElementById("btnEdit");
+  b.textContent = "Edit: " + (editMode ? "on" : "off");
+  b.classList.toggle("primary", editMode);
+  buildDoc();
+};
+
 // ---- profile ----
 function renderProfile() {
   const rows = document.getElementById("profileRows");
@@ -1075,6 +1274,7 @@ document.getElementById("fileImport").onchange = ev => {
     for (const [k, v] of Object.entries(data.answers || {})) {
       if (k.startsWith("ME@")) state.edits[k] = v; else state.answers[k] = v;
     }
+    editUndo = []; editRedo = [];
     staleEditsDropped = pruneStaleEdits();
     save(); buildDoc(); renderPanel(); updateProgress(); renderProfile();
   });
@@ -1083,6 +1283,7 @@ document.getElementById("btnClear").onclick = () => {
   if (confirm("Clear every answer on this page?")) {
     state = { profile: {}, answers: {}, edits: {}, view: state.view || "redline",
       navOpen: state.navOpen }; overrideIds.clear(); meCardId = null;
+    editUndo = []; editRedo = [];
     save(); buildDoc(); renderPanel(); updateProgress(); renderProfile();
   }
 };
