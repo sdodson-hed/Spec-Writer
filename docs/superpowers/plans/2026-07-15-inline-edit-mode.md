@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - The page must stay ONE self-contained HTML file: no external libraries, no network, no server. All JS lives inside `_TEMPLATE` / `EDIT_CORE_JS` strings in `specgen/htmlpage.py`.
-- Manual edits keep the exact existing answer format: key `ME@<start>`, value `{start, end, before, after, notes}` in original-master character offsets (`DATA.text`). `generate.py` and `answers.py` must NOT change.
+- Manual edits keep the exact existing answer format: key `ME@<start>`, value `{start, end, before, after, notes}` in original-master character offsets (`DATA.text`). `answers.py` must not change; `generate.py` may change only in the single validation widening Task 5 Step 1 specifies (accepting insertion-only records).
 - Never default or silently drop an answer; drops are counted and surfaced (existing `staleEditsDropped` notice pattern).
 - Test commands: `python -m pytest tests/ -q` (full suite currently 108 passing), `python scripts/audit_corpus.py` (55/55 must stay green).
 - Run all commands from the repo root `C:\Users\Victor Colosi\dev\Spec intact`.
