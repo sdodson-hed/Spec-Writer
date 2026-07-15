@@ -163,17 +163,48 @@ def test_numeric_answer_in_range_guard_present(tmp_path):
 
 
 def test_manual_text_edit_hooks_present(tmp_path):
-    # Task 14: direct select-and-replace text editing, tracked end-to-end.
+    # Inline edit mode: edits render inside gaps; review card replaces the
+    # old select-and-replace card.
     html = _page(tmp_path)
-    assert 'class="gap" data-s=' in html   # offset-mapped gaps for selection
-    assert "TEXT EDIT" in html              # edit-card chip
-    assert "data-me" in html                # edit mark attribute/lookup
+    assert 'class="gap" data-s=' in html    # offset-mapped gaps
+    assert "data-e=" in html                # gap end bound for the editor
+    assert "TEXT EDIT" in html              # review-card chip
+    assert "data-me" in html                # edit-run attribute/lookup
     assert "state.edits" in html            # edit records persisted in state
-    assert (
-        "This bracket crosses structural markup and can't be answered as a "
-        "choice; it is always listed in the unresolved report. You can "
-        "select the text in the document and edit it directly instead."
-    ) in html
+    assert "renderMeCard" in html           # review & revert card
+    assert "Revert this change" in html
+
+
+def test_select_and_replace_flow_removed(tmp_path):
+    html = _page(tmp_path)
+    assert "onDocMouseUp" not in html
+    assert "rejectSelection" not in html
+    assert "renderEditCard" not in html
+    assert "updateMeMark" not in html
+    assert 'addEventListener("mouseup"' not in html
+
+
+def test_edits_render_inline_not_as_islands(tmp_path):
+    html = _page(tmp_path)
+    assert "gapInner" in html
+    assert 's class="me"' in html or 'class=\\"me\\"' in html or "s.me" in html
+    assert "#doc s.me" in html              # CSS for inline deleted run
+    assert "#doc ins.me" in html            # CSS for inline inserted run
+    assert "mark.me" not in html            # old island styling/wiring gone
+
+
+def test_locked_inline_spans_present(tmp_path):
+    html = _page(tmp_path)
+    assert "lockedtxt" in html
+    assert "lockedOrigIn" in html
+    # plural and in-note bracket spans are page-locked for generate parity
+    assert "d.in_note || d.plural" in html
+
+
+def test_prune_also_rejects_locked_overlaps(tmp_path):
+    html = _page(tmp_path)
+    body = html.split("function meConflict(")[1].split("\nfunction ")[0]
+    assert "in_note" in body and "plural" in body
 
 
 def test_prune_stale_edits_also_drops_conflicting_imports(tmp_path):

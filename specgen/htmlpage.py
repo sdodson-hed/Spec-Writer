@@ -294,8 +294,16 @@ button.primary { background: var(--accent); color: var(--accent-ink); border-col
 #doc mark s.fold { cursor: pointer; font-style: italic; }
 #doc s.unitcut { color: var(--del-ink); background: var(--del); text-decoration: line-through; }
 #doc mark.taicut { cursor: pointer; }
-#doc mark.me { background: var(--done); color: var(--done-ink);
-  border: 1px dashed var(--accent); }
+#doc s.me { color: var(--del-ink); background: var(--del);
+  text-decoration: line-through; cursor: pointer; border-radius: 3px; }
+#doc ins.me { color: var(--done-ink); background: var(--done);
+  text-decoration: underline; cursor: pointer; border-radius: 3px; }
+#doc span.me { cursor: pointer; border-bottom: 1px dashed var(--accent); }
+#doc .lockedtxt { border-radius: 3px; }
+#doc.editing .gap { cursor: text; }
+#doc.editing .gap:focus { outline: none; }
+#doc.editing mark, #doc.editing .lockedtxt, #doc.editing s.unitcut {
+  box-shadow: 0 0 0 1px var(--line) inset; background-clip: padding-box; }
 
 #side { position: sticky; top: 74px; align-self: start;
   max-height: calc(100vh - 96px); overflow-y: auto; display: flex;
@@ -413,7 +421,7 @@ state.navOpen = state.navOpen === undefined ? true : state.navOpen;
 state.edits = state.edits || {};
 let activeId = null;
 let overrideIds = new Set();
-let meState = null;              // {s, e, id} while the edit card is open
+let editMode = false; let meCardId = null;
 
 const ds = DATA.decisions.filter(d => !d.in_note && !d.plural);
 const byId = Object.fromEntries(ds.map(d => [d.id, d]));
@@ -469,8 +477,6 @@ function setNotes(id, val) {
 // ---- document view ----
 function activeSpans() {
   const spans = ds.map(d => ({ s: d.char_start, e: d.char_end, pri: 3, d }));
-  for (const [id, rec] of Object.entries(state.edits || {}))
-    spans.push({ s: rec.start, e: rec.end, pri: 3, me: id });
   for (const t of DATA.tailoring_spans || []) {
     const names = t.opt.split(",").map(x => x.trim());
     if (names.every(nm => state.profile[nm] === "remove"))
@@ -504,31 +510,101 @@ function inRemovedTai(d) {
     t.opt.split(",").map(x => x.trim()).every(nm => state.profile[nm] === "remove"));
 }
 
-function buildDoc() {
-  const doc = document.getElementById("doc");
-  const spans = activeSpans();
-  const roots = spans.filter(sp => !sp.parent);
+let docAnchors = [];
+function computeDocAnchors(roots) {
+  // pin anchors that fall inside a root island to the island start, then
+  // assign each anchor to the gap that renders it (same cursor walk the old
+  // gapHtml used, so boundary anchors land exactly once)
   const anchors = (DATA.nav || [])
     .map((n, i) => ({ c: n.char, i }))
     .sort((a, b) => a.c - b.c);
   for (const a of anchors)
     for (const sp of roots)
       if (a.c > sp.s && a.c < sp.e) { a.c = sp.s; break; }
+  const gaps = [];
+  let pos = 0;
+  for (const sp of roots) { gaps.push([pos, sp.s]); pos = sp.e; }
+  gaps.push([pos, DATA.text.length]);
   let ai = 0;
-  const gapHtml = (from, to) => {
-    let html = "", pos = from;
+  for (const [from, to] of gaps)
     while (ai < anchors.length && anchors[ai].c <= to) {
-      const a = anchors[ai];
-      const cut = Math.max(a.c, pos);
-      const n = DATA.nav[a.i];
+      anchors[ai].gap = from;
+      anchors[ai].c = Math.max(anchors[ai].c, from);
+      ai++;
+    }
+  docAnchors = anchors;
+}
+function lockedOrigIn(s, e) {
+  return DATA.decisions
+    .filter(d => (d.in_note || d.plural) && d.char_start >= s && d.char_end <= e)
+    .map(d => [d.char_start, d.char_end])
+    .sort((a, b) => a[0] - b[0]);
+}
+function origHtml(gapStart, a, b) {
+  // original text slice [a,b) with nav anchors and locked-span tints
+  const marks = docAnchors
+    .filter(an => an.gap === gapStart && an.c >= a && an.c <= b)
+    .map(an => ({ at: an.c, anchor: an.i }));
+  for (const [ls, le] of lockedOrigIn(a, b))
+    marks.push({ at: ls, lockEnd: le });
+  marks.sort((x, y) => x.at - y.at);
+  let html = "", pos = a;
+  for (const m of marks) {
+    html += esc(DATA.text.slice(pos, m.at));
+    pos = m.at;
+    if (m.anchor !== undefined) {
+      const n = DATA.nav[m.anchor];
       const num = n && n.depth > 0 && n.num
         ? `<span class="paranum">${esc(n.num)}</span>` : "";
-      html += esc(DATA.text.slice(pos, cut)) + `<span class="navanchor" id="nav-${a.i}">${num}</span>`;
-      pos = cut; ai++;
+      html += `<span class="navanchor" contenteditable="false" id="nav-${m.anchor}">${num}</span>`;
+    } else {
+      html += `<span class="lockedtxt" contenteditable="false">${esc(DATA.text.slice(m.at, m.lockEnd))}</span>`;
+      pos = m.lockEnd;
     }
-    html += esc(DATA.text.slice(pos, to));
-    return `<span class="gap" data-s="${from}">${html}</span>`;
-  };
+  }
+  html += esc(DATA.text.slice(pos, b));
+  return html;
+}
+function gapInner(s, e) {
+  const recs = Object.values(state.edits || {})
+    .filter(r => r.start >= s && r.end <= e)
+    .sort((a, b) => a.start - b.start);
+  let html = "", pos = s;
+  for (const r of recs) {
+    html += origHtml(s, pos, r.start);
+    const id = "ME@" + r.start;
+    if (state.view === "redline") {
+      if (r.before) html += `<s class="me" data-me="${esc(id)}">${esc(r.before)}</s>`;
+      if (r.after) html += `<ins class="me" data-me="${esc(id)}">${esc(r.after)}</ins>`;
+    } else if (r.after) {
+      html += `<span class="me" data-me="${esc(id)}">${esc(r.after)}</span>`;
+    }
+    pos = r.end;
+  }
+  html += origHtml(s, pos, e);
+  return html;
+}
+function gapAttrs() {
+  return editMode ? ' contenteditable="true" spellcheck="false"' : "";
+}
+function wireMeRuns(root) {
+  root.querySelectorAll(".me[data-me]").forEach(el => el.onclick = () => {
+    meCardId = el.dataset.me;
+    const prev = activeId;
+    activeId = null;
+    if (prev && byId[prev]) updateMark(byId[prev]);
+    renderPanel();
+  });
+}
+function renderGap(gapEl) {
+  gapEl.innerHTML = gapInner(+gapEl.dataset.s, +gapEl.dataset.e);
+  wireMeRuns(gapEl);
+}
+function buildDoc() {
+  const doc = document.getElementById("doc");
+  const spans = activeSpans();
+  const roots = spans.filter(sp => !sp.parent);
+  computeDocAnchors(roots);
   let html = "", pos = 0;
   const emit = (sp) => {
     const kids = spans.filter(k => k.parent === sp);
@@ -536,7 +612,6 @@ function buildDoc() {
     for (const k of kids) { inner += esc(DATA.text.slice(p, k.s)); inner += emit(k); p = k.e; }
     inner += esc(DATA.text.slice(p, sp.e));
     if (sp.d) return `<mark data-id="${sp.d.id}" id="mk-${sp.d.id}">${inner}</mark>`;
-    if (sp.me) return `<mark class="me" data-me="${esc(sp.me)}" id="mk-me-${esc(sp.me)}">${inner}</mark>`;
     if (sp.tai) {
       const n = sp.e - sp.s;
       return state.view === "redline"
@@ -545,23 +620,22 @@ function buildDoc() {
     }
     return state.view === "redline" ? `<s class="unitcut">${inner}</s>` : "";
   };
+  const gap = (from, to) =>
+    `<span class="gap" data-s="${from}" data-e="${to}"${gapAttrs()}>${gapInner(from, to)}</span>`;
   for (const sp of roots) {
-    html += gapHtml(pos, sp.s);
+    html += gap(pos, sp.s);
     html += emit(sp);
     pos = sp.e;
   }
-  html += gapHtml(pos, DATA.text.length);
+  html += gap(pos, DATA.text.length);
   doc.innerHTML = html;
+  doc.classList.toggle("editing", editMode);
   doc.querySelectorAll("mark[data-id]").forEach(m => m.onclick = () => select(m.dataset.id, false));
   doc.querySelectorAll("mark.taicut").forEach(m => m.onclick = () => {
     alert("Tailoring block '" + m.dataset.opt + "' is removed by the Project Profile. Set it back to 'keep' to restore the text.");
   });
-  doc.querySelectorAll("mark.me").forEach(m => m.onclick = () => {
-    const id = m.dataset.me, rec = state.edits[id];
-    if (rec) startEdit(rec.start, rec.end, id);
-  });
+  wireMeRuns(doc);
   ds.forEach(updateMark);
-  Object.keys(state.edits || {}).forEach(updateMeMark);
 }
 let navCollapsed = new Set();
 function renderNav() {
@@ -650,18 +724,10 @@ function renderRedline(m, d, txt) {
   const f = m.querySelector("s.fold");
   if (f) f.onclick = ev => { ev.stopPropagation(); f.outerHTML = `<s>${esc(orig)}</s>`; };
 }
-function updateMeMark(id) {
-  const m = document.getElementById("mk-me-" + id);
-  const rec = state.edits[id];
-  if (!m || !rec) return;
-  m.innerHTML = state.view === "redline"
-    ? `<s>${esc(rec.before)}</s><ins>${esc(rec.after)}</ins>`
-    : esc(rec.after);
-}
 
 // ---- side panel ----
 function select(id, scrollDoc) {
-  meState = null;
+  meCardId = null;
   const prev = activeId;
   activeId = id;
   if (prev && byId[prev]) updateMark(byId[prev]);
@@ -675,7 +741,7 @@ function select(id, scrollDoc) {
 }
 function renderPanel() {
   const p = document.getElementById("decPanel");
-  if (meState) { renderEditCard(p); return; }
+  if (meCardId) { renderMeCard(p); return; }
   const d = byId[activeId];
   if (!d) {
     const notice = staleEditsDropped
@@ -824,7 +890,7 @@ function gotoPrev() {
   if (i > 0) select(ds[i - 1].id, true);
 }
 
-// ---- manual text edits (select-and-replace, tracked changes) ----
+// ---- manual text edits (inline, tracked changes) ----
 function pruneStaleEdits() {
   let dropped = 0;
   // ascending start: on overlap between imported edits, the first kept wins
@@ -846,41 +912,6 @@ function pruneStaleEdits() {
   }
   return dropped;
 }
-function onDocMouseUp() {
-  const sel = window.getSelection();
-  if (!sel || sel.isCollapsed || sel.rangeCount === 0) return;
-  const range = sel.getRangeAt(0);
-  const gapOffset = (node, offset) => {
-    const gap = node.parentElement;
-    if (node.nodeType !== Node.TEXT_NODE || !gap || !gap.classList.contains("gap"))
-      return null;
-    let sum = 0, sib = node.previousSibling;
-    while (sib) {
-      if (sib.nodeType === Node.TEXT_NODE) sum += sib.textContent.length;
-      sib = sib.previousSibling;
-    }
-    return { gap, off: +gap.dataset.s + sum + offset };
-  };
-  const a = gapOffset(range.startContainer, range.startOffset);
-  const b = gapOffset(range.endContainer, range.endOffset);
-  if (!a || !b || a.gap !== b.gap) { rejectSelection(); return; }
-  let s = a.off, e = b.off;
-  if (s > e) [s, e] = [e, s];
-  if (!DATA.text.slice(s, e).trim()) return;  // empty/whitespace-only: ignore
-  startEdit(s, e, null);
-}
-function rejectSelection() {
-  document.getElementById("decPanel").innerHTML =
-    `<div class="muted">Select plain text only — bracketed decisions are
-      answered from the panel.</div>`;
-}
-function startEdit(s, e, id) {
-  const prev = activeId;
-  activeId = null;
-  if (prev && byId[prev]) updateMark(byId[prev]);
-  meState = { s, e, id: id || null };
-  renderPanel();
-}
 function meConflict(s, e, excludeId) {
   for (const d of ds)
     if (s < d.char_end && e > d.char_start) return `decision ${d.id}`;
@@ -899,54 +930,35 @@ function meConflict(s, e, excludeId) {
     if (eid === excludeId) continue;
     if (s < rec.end && e > rec.start) return `edit ${eid}`;
   }
+  for (const d of DATA.decisions)
+    if ((d.in_note || d.plural) && s < d.char_end && e > d.char_start)
+      return `locked text (${d.id})`;
   return null;
 }
-function renderEditCard(p) {
-  const { s, e, id } = meState;
-  const rec = id ? state.edits[id] : null;
-  const orig = rec ? rec.before : DATA.text.slice(s, e);
-  const curNotes = rec ? (rec.notes || "") : "";
-  let h = `<div class="dec-top"><span class="chip">TEXT EDIT</span></div>`;
-  h += `<div class="loc">Original text</div>`;
-  h += `<div class="hint" style="font-style:normal;white-space:pre-wrap">${esc(orig)}</div>`;
-  h += `<textarea id="meText" style="width:100%;min-height:90px;font:inherit;
-    font-size:13px;padding:8px;border:1px solid var(--line);border-radius:8px;
-    background:var(--bg);color:var(--ink)">${esc(orig)}</textarea>`;
+function renderMeCard(p) {
+  const rec = state.edits[meCardId];
+  if (!rec) { meCardId = null; renderPanel(); return; }
+  let h = `<div class="dec-top"><span class="chip">TEXT EDIT</span>
+    <span class="chip">${esc(meCardId)}</span></div>`;
+  h += `<div class="loc">Deleted text</div>
+    <div class="hint" style="font-style:normal;white-space:pre-wrap;text-decoration:line-through">${esc(rec.before) || "(nothing)"}</div>`;
+  h += `<div class="loc">Inserted text</div>
+    <div class="hint" style="font-style:normal;white-space:pre-wrap">${esc(rec.after) || "(nothing)"}</div>`;
   h += `<div class="notes-row"><input id="meNotes"
-    placeholder="note for the audit log (optional)" value="${esc(curNotes)}"></div>`;
-  h += `<div class="navrow"><button class="primary" id="meSave">Save</button>
-    <button id="meCancel">Cancel</button>` +
-    (id ? `<button class="danger" id="meRemove">Remove edit</button>` : "") +
-    `</div><div class="muted" id="meMsg" style="margin-top:6px"></div>`;
+    placeholder="note for the audit log (optional)" value="${esc(rec.notes || "")}"></div>`;
+  h += `<div class="navrow"><button class="danger" id="meRevert">Revert this change</button></div>`;
+  h += `<div class="muted" style="margin-top:6px">All retyping happens in the
+    document — turn Edit on and type. This card reviews one change.</div>`;
   p.innerHTML = h;
-  document.getElementById("meSave").onclick = saveEdit;
-  document.getElementById("meCancel").onclick = () => { meState = null; renderPanel(); };
-  const rm = document.getElementById("meRemove");
-  if (rm) rm.onclick = () => removeEdit(id);
-}
-function saveEdit() {
-  const { s, e, id } = meState;
-  const orig = id ? state.edits[id].before : DATA.text.slice(s, e);
-  const after = document.getElementById("meText").value;
-  const notes = document.getElementById("meNotes").value.trim();
-  const msg = document.getElementById("meMsg");
-  if (after === orig) {
-    msg.textContent = "Type a replacement that differs from the original text.";
-    return;
-  }
-  const conflict = meConflict(s, e, id);
-  if (conflict) {
-    msg.textContent = `Can't save — this selection overlaps ${conflict}.`;
-    return;
-  }
-  state.edits["ME@" + s] = { start: s, end: e, before: orig, after, notes };
-  meState = null;
-  save(); buildDoc(); refresh();
-}
-function removeEdit(id) {
-  delete state.edits[id];
-  meState = null;
-  save(); buildDoc(); refresh();
+  document.getElementById("meNotes").onchange = ev => {
+    rec.notes = ev.target.value.trim();
+    save();
+  };
+  document.getElementById("meRevert").onclick = () => {
+    delete state.edits[meCardId];
+    meCardId = null;
+    save(); buildDoc(); refresh();
+  };
 }
 
 // ---- profile ----
@@ -1057,12 +1069,10 @@ document.getElementById("fileImport").onchange = ev => {
 document.getElementById("btnClear").onclick = () => {
   if (confirm("Clear every answer on this page?")) {
     state = { profile: {}, answers: {}, edits: {}, view: state.view || "redline",
-      navOpen: state.navOpen }; overrideIds.clear(); meState = null;
+      navOpen: state.navOpen }; overrideIds.clear(); meCardId = null;
     save(); buildDoc(); renderPanel(); updateProgress(); renderProfile();
   }
 };
-
-document.getElementById("doc").addEventListener("mouseup", onDocMouseUp);
 
 window.addEventListener("beforeunload", ev => {
   if (dirty) { ev.preventDefault(); ev.returnValue = ""; }
