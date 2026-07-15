@@ -56,15 +56,25 @@ SpecsIntact tracked-changes output.
 5. **Select-and-replace is removed.** `onDocMouseUp` selection capture,
    `rejectSelection`, and the old TEXT EDIT card entry path are deleted.
    (This also removes the wrong-original-text selection bug.)
-6. **Per-decision custom text.** Every decision card gains an **Edit text**
-   button. It opens a textarea prefilled with the decision's original
-   bracket text. Saving stores a *custom text* answer for that decision:
-   - Renders as `<s>original</s><ins>custom</ins>` in redline view, custom
-     text alone in clean view.
-   - Counts as answered in the progress bar and decision states.
-   - The card shows the custom text with **Remove custom text** to restore
-     normal choice/fill-in answering. Setting a custom text clears any
-     choice answer and vice versa.
+6. **Per-decision custom text.** Custom text answers already exist end to
+   end: the decision card's freeform input ("…or type replacement text")
+   stores literal text in the answer, `resolvedText` renders it as
+   `<s>original</s><ins>custom</ins>`, and `generate` applies it (action
+   "custom text", `<DEL>/<ADD>` in revisions). What's added:
+   - An **Edit text…** button on every decision card that prefills the
+     freeform input with the decision's original bracket text and focuses
+     it, so the user can tweak the locked span's text directly.
+   - `submittal-review` cards gain the freeform input (generate already
+     handles custom text for that kind).
+   - No storage-format or generate changes.
+7. **Edit mode forces redline view.** Entering edit mode switches the view
+   to redline (the tracking must be visible to be editable); the view
+   toggle is disabled while editing.
+8. **Unsafe-group copy fix.** The unsafe-decision card currently says
+   "select the text in the document and edit it directly instead" — advice
+   that both the old and new conflict rules reject. New copy: "It is
+   flagged in the unresolved report for manual editing in SI Editor after
+   generation."
 
 ## Architecture
 
@@ -82,57 +92,69 @@ SpecsIntact tracked-changes output.
 
 ### Edit engine
 
-- Edit mode sets `contentEditable` on each `.gap` span (not on `#doc`);
+The DOM is a pure view; the `ME@` records in `state.edits` stay the single
+source of truth at every keystroke. Each input event is computed against a
+**run model** built from the records, the records are updated, and the one
+affected gap is re-rendered with the caret restored. (This hybrid was
+chosen over mutating `<ins>`/`<s>` nodes in place: since `beforeinput` is
+`preventDefault()`-ed either way, re-rendering one gap costs nothing and
+the state can never drift from the DOM.)
+
+- **Run model (pure functions, no DOM).** A gap `[s, e)` plus its records
+  expand to runs `{t: "o"|"d"|"i", text}` — original kept, deleted
+  original, inserted. Invariant: concatenating o+d texts equals
+  `text.slice(s, e)`. Operations are expressed in *display offsets*
+  (positions in the concatenation of all run texts, which is exactly the
+  visible redline text):
+  - `opInsert(runs, at, text)` — an `at` inside a `d` run first moves to
+    the run's end (replacement text follows its strikethrough); splices in
+    an `i` run; caret lands after the inserted text.
+  - `opDelete(runs, from, to)` — `o` portions in range become `d`; `i`
+    portions are removed; `d` portions stay. Returns both the range start
+    and end so callers place the caret: before the strikethrough for
+    Backspace, after it for Delete/selection operations.
+  - `deleteTarget(runs, caret, dir)` — the single character a collapsed
+    Backspace/Delete targets, skipping over already-struck (`d`) runs;
+    null at a gap boundary.
+  - `runsToRecords(runs, gapStart)` — coalesces consecutive `d`/`i` runs
+    into records `{start, end, before, after}` keyed `ME@<start>`;
+    `before === after` records are dropped (typed-then-erased no-ops).
+    Audit notes carry over from prior records matching on `start` +
+    `before`.
+- Edit mode sets `contenteditable` on each `.gap` span (not on `#doc`);
   islands stay non-editable. Editing is confined to one gap per operation.
-- A `beforeinput` listener on `#doc` handles all input types:
-  - `insertText` / `insertParagraph` / `insertFromPaste` (plain text):
-    `preventDefault()`, insert or extend an `<ins>` at the caret. If the
-    selection is non-collapsed, first apply the delete rule below.
-  - `deleteContentBackward` / `deleteContentForward` / `deleteByCut` /
-    `deleteByDrag`: `preventDefault()`; characters from original text are
-    wrapped in `<s>` (splitting text nodes as needed); characters inside
-    `<ins>` are removed; caret moves past the struck run.
-  - Anything crossing a locked island or a gap boundary: blocked + hint.
-  - Other input types (`formatBold`, etc.): `preventDefault()`.
-- **Derivation.** After every applied input, walk the affected gap's DOM in
-  order, tracking the original-text offset from `data-s`:
-  - text node → unchanged original (advances offset, contributes to both
-    sides)
-  - `<s>` → deleted original (advances offset, `before` only)
-  - `<ins>` → insertion (`after` only)
-  - nav anchors → skipped (zero-width)
-  Consecutive `<s>`/`<ins>` runs with no plain text between them coalesce
-  into one record `{start, end, before, after}`, keyed `ME@<start>`. An
-  insertion at offset p is `{start: p, end: p, before: ""}`. All prior
-  `ME@` records within the gap's range are replaced by the derived set;
-  records whose `before === ""` and `after === ""` are dropped. Existing
-  audit notes are carried over by matching record start where possible.
-  `save()` autosaves as today.
-- **Undo.** Programmatic DOM mutation breaks native undo, so keep a
-  session-only snapshot stack per gap (innerHTML + caret position before
-  each applied input, capped). Ctrl+Z pops it; Ctrl+Y/Ctrl+Shift+Z redoes.
-- **Invariant.** After any operation, concatenating (text nodes + `<s>`
-  content) over the gap equals `DATA.text.slice(gapStart, gapEnd)`. The
-  derivation asserts this and, on mismatch, discards the gap's DOM state
-  and rebuilds it from records (fail-safe, console warning).
+- A `beforeinput` listener on `#doc` `preventDefault()`s everything and
+  maps: `insertText`/`insertParagraph`/`insertLineBreak` (as `\n`)/
+  `insertFromPaste` (plain text only) → insert; `deleteContentBackward`/
+  `deleteContentForward`/`deleteByCut`/`deleteByDrag` → delete. All other
+  input types are swallowed. A selection spanning two gaps, crossing a
+  locked island, or an op intersecting an in-gap locked range: blocked +
+  transient hint. Known limitation: IME composition is not supported
+  (composition events are not cancelable); acceptable for English spec
+  text.
+- **In-gap locked ranges.** Plural `[s]` markers and designer-note
+  brackets are decisions excluded from `ds`, so their spans are plain gap
+  text — but `generate` rejects manual edits overlapping *any* scanned
+  group. For parity they are rendered as non-editable tinted spans and ops
+  intersecting them are blocked (closes a page/generate inconsistency that
+  exists today).
+- **Caret mapping.** Display offset ↔ DOM position by walking the gap's
+  text nodes, skipping nav-anchor content (`contenteditable="false"`,
+  zero-width in the model).
+- **Undo.** Session-only stack of `{gap, records-before/after,
+  caret-before/after}` per applied op (capped at 100); Ctrl+Z / Ctrl+Y or
+  Ctrl+Shift+Z via keydown while in edit mode.
 
-### Custom decision answers
+### Custom decision answers (existing mechanism, reused)
 
-- Stored in `state.answers[id]` as `{ custom: "<text>" }` (distinct from
-  option-index / literal answers). `eff()`/`resolvedText()` return the
-  custom text; existing redline rendering applies.
-- Export/import: flows through answers JSON as-is. JSON/HTML-only, like
-  `ME@` edits; the Excel path is unchanged and ignores custom answers.
-- `generate` (generate.py): a `{custom}` answer for a decision group is
-  validated (decision exists, group is `safe`, not in a designer note) and
-  applied through the same replacement machinery as manual edits, with the
-  group's span as the replace range, `_escape_manual_edit_text` for output
-  escaping, action `"custom text"` in the redline log, and normal ADD/DEL
-  markup in `--revisions` output. Counts as resolved. Invalid custom
-  answers land in the unresolved report with a reason, never defaulted.
-- `pruneStaleEdits` equivalent: a custom answer whose decision id no longer
-  exists is dropped on import (console warning + panel notice, same as
-  stale edits).
+Custom text is already a first-class answer: literal (non-option) text in
+`state.answers[id].answer` renders via `resolvedText`, exports in the
+answers JSON, and `generate` applies it (`after = ans`, action
+`"custom text"`, `_rev_wrap`'s `<DEL>before</DEL><ADD>after</ADD>` in
+revisions). Unknown answer ids already fail loudly in `generate`. No
+storage, export, or generate.py changes. The UI additions are only the
+**Edit text…** prefill button and the freeform input on
+`submittal-review` cards.
 
 ### Conflict rules (unchanged in spirit)
 
@@ -156,14 +178,21 @@ edits still cannot touch its span.
 
 ## Testing
 
+- **Pure-core unit tests via Node (pytest wrapper, skipped when `node`
+  is not on PATH):** the run-model functions are emitted as a standalone
+  DOM-free script block; a pytest harness writes them plus JS assertions
+  to a temp file and runs `node` on it. Covers opInsert/opDelete/
+  deleteTarget/runsToRecords round-trips, note carry-over, no-op dropping,
+  and the o+d invariant.
 - **Python (pytest, as the suite does today):**
-  - `generate` custom-answer path: applied, escaped, redline action,
-    revisions ADD/DEL, unresolved on invalid id/unsafe group/note overlap.
-  - Export→generate round-trip fixture containing inline edits + a custom
-    answer.
+  - `generate` custom-answer path on a `submittal-review` group: applied,
+    revisions resolve/revert round-trip.
+  - Export-shaped answers JSON containing inline-edit `ME@` records + a
+    custom answer → `generate --revisions` round-trip fixture.
   - Static-source assertions on emitted HTML/JS: Edit toggle present,
     `beforeinput` handler wired, `onDocMouseUp`/select-and-replace absent,
-    inline `<s class="me">`/`<ins class="me">` rendering present.
+    inline `<s class="me">`/`<ins class="me">` rendering present, updated
+    unsafe-group copy.
 - **Manual browser checklist** (extends the pending Tasks 7/8 pass): type,
   delete forward/backward, selection delete, paste, Enter, undo/redo,
   island blocking + hint, review card revert, audit note, custom text set/
