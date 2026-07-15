@@ -157,16 +157,57 @@ def cmd_answers(args) -> int:
 
 def cmd_generate(args) -> int:
     from .answers import read_answers
+    from .audit import audit_file
     from .generate import generate
 
+    report = audit_file(args.file)
+    if report["unknowns"]:
+        for u in report["unknowns"]:
+            print(f"UNKNOWN {u['type']} @ {u['offset']}: {u['context']}")
+        if not args.force:
+            print("Refusing: section has unattributed decision signals "
+                  "(rerun with --force to proceed anyway)")
+            return 1
+        print("WARNING: proceeding despite unattributed signals (--force)")
+
     profile, ans = read_answers(args.answers)
-    summary = generate(args.file, profile, ans, args.out)
+    summary = generate(args.file, profile, ans, args.out, revisions=args.revisions)
     print(json.dumps(summary, indent=2))
     return 0
 
 
+def cmd_audit(args) -> int:
+    from .audit import audit_file
+
+    report = audit_file(args.file)
+    if args.json:
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+    else:
+        for sig, buckets in sorted(report["signals"].items()):
+            row = " · ".join(f"{b}={n}" for b, n in sorted(buckets.items()))
+            print(f"{sig:32s} {row}")
+        for u in report["unknowns"]:
+            print(f"UNKNOWN {u['type']} @ {u['offset']}: {u['context']}")
+    if report["unknowns"]:
+        print(f"FAIL: {len(report['unknowns'])} unattributed signal(s)")
+        return 1
+    print("OK: every decision signal attributed")
+    return 0
+
+
 def cmd_html(args) -> int:
+    from .audit import audit_file
     from .htmlpage import write_html
+
+    report = audit_file(args.file)
+    if report["unknowns"]:
+        for u in report["unknowns"]:
+            print(f"UNKNOWN {u['type']} @ {u['offset']}: {u['context']}")
+        if not args.force:
+            print("Refusing: section has unattributed decision signals "
+                  "(rerun with --force to proceed anyway)")
+            return 1
+        print("WARNING: proceeding despite unattributed signals (--force)")
 
     sec = secfile.parse(args.file)
     m = build_manifest(sec)
@@ -191,6 +232,7 @@ def main(argv=None) -> int:
         ("answers", cmd_answers),
         ("generate", cmd_generate),
         ("html", cmd_html),
+        ("audit", cmd_audit),
     ]:
         sp = sub.add_parser(name)
         sp.add_argument("file")
@@ -201,6 +243,11 @@ def main(argv=None) -> int:
         if name == "generate":
             sp.add_argument("--answers", required=True)
             sp.add_argument("-o", "--out", required=True)
+            sp.add_argument("--revisions", action="store_true")
+        if name in ("html", "generate"):
+            sp.add_argument("--force", action="store_true")
+        if name == "audit":
+            sp.add_argument("--json", action="store_true")
         sp.set_defaults(fn=fn)
     args = p.parse_args(argv)
     return args.fn(args)

@@ -16,6 +16,7 @@ exact same span the generator will modify.
 
 from __future__ import annotations
 
+import bisect
 import re
 from dataclasses import dataclass
 
@@ -50,35 +51,56 @@ def _title_of(el: Element) -> str:
     return _WS_RE.sub(" ", ttl.text()).strip() if ttl is not None else el.name
 
 
+_PART_TITLE_STRIP_RE = re.compile(r"^PART\s+\d+\s*", re.I)
+
+
 @dataclass
 class _LocSpan:
     start: int
     end: int
     title: str
     depth: int
+    num: str = ""
 
 
-def _location_index(root: Element) -> tuple[list[_LocSpan], list[tuple[int, int]]]:
-    """Source spans of PRT/SPT (with titles) and NTE elements."""
+def _location_index(root: Element) -> list[_LocSpan]:
+    """Source spans of PRT/SPT (with titles and positionally-computed numbers).
+
+    Real masters carry no numbering attributes on PRT/SPT — SI's own Navigate
+    panel computes numbers from document position, so we do the same: depth-0
+    (PRT) children of root are "PART 1", "PART 2", ... in order; each PRT/SPT's
+    j-th PRT/SPT child gets "<parent-prefix>.j".
+    """
     locs: list[_LocSpan] = []
-    notes: list[tuple[int, int]] = []
 
-    def walk(el: Element, depth: int) -> None:
+    # counter is a 1-item list (not a plain int) so that non-PRT/SPT wrapper
+    # children (e.g. <TAI> alternates) share and advance the SAME sibling
+    # count as their surrounding siblings, instead of each wrapper starting
+    # its own count from zero — masters interleave tailoring wrappers between
+    # true PRT/SPT siblings, and SI's positional numbering does not reset there.
+    def walk(el: Element, depth: int, prefix: str, counter: list[int]) -> None:
         for child in el.children:
             if not isinstance(child, Element):
                 continue
             if child.name in ("PRT", "SPT"):
+                counter[0] += 1
+                child_no = counter[0]
+                if depth == 0:
+                    num, child_prefix = f"PART {child_no}", str(child_no)
+                else:
+                    num = child_prefix = f"{prefix}.{child_no}"
+                title = _title_of(child)
+                if depth == 0:
+                    title = _PART_TITLE_STRIP_RE.sub("", title)
                 locs.append(
-                    _LocSpan(child.src_start, child.src_end, _title_of(child), depth)
+                    _LocSpan(child.src_start, child.src_end, title, depth, num)
                 )
-                walk(child, depth + 1)
+                walk(child, depth + 1, child_prefix, [0])
             else:
-                if child.name == "NTE":
-                    notes.append((child.src_start, child.src_end))
-                walk(child, depth)
+                walk(child, depth, prefix, counter)
 
-    walk(root, 0)
-    return locs, notes
+    walk(root, 0, "", [0])
+    return locs
 
 
 def _locate(locs: list[_LocSpan], offset: int) -> str:
@@ -89,7 +111,16 @@ def _locate(locs: list[_LocSpan], offset: int) -> str:
 def build_manifest(sec: SecFile) -> dict:
     root = sec.root
     groups, stream, _offs = scan_groups(sec.source)
-    locs, notes = _location_index(root)
+    locs = _location_index(root)
+    nav = [
+        {
+            "num": s.num,
+            "title": s.title,
+            "depth": s.depth,
+            "char": bisect.bisect_left(_offs, s.start),
+        }
+        for s in locs
+    ]
 
     scn = root.first("SCN")
     stl = root.first("STL")
@@ -104,9 +135,17 @@ def build_manifest(sec: SecFile) -> dict:
 
     dups = duplicate_map(groups)
     _BLOCK_TAGS = ("<OLI", "<ITM", "<LST", "<TXT", "<SPT")
+    sub_spans = [
+        (s.src_end, _WS_RE.sub(" ", s.text()).strip()) for s in root.iter("SUB")
+    ]
+    sub_spans.sort()
+    note_ends = sorted(
+        (nte.src_end, _WS_RE.sub(" ", nte.text()).strip()[:1500])
+        for nte in root.iter("NTE")
+    )
     decisions = []
     for g in groups:
-        in_note = any(s <= g.src_start < e for s, e in notes)
+        in_note = g.in_note
         context = context_excerpt(stream, g.char_start, g.char_end)
         # options that are whole list items / blocks are independent includes
         # (select any subset); inline text alternatives are choose-one
@@ -127,19 +166,36 @@ def build_manifest(sec: SecFile) -> dict:
                 "duplicate_of": dups.get(g.gid),
                 "hint": _hint(g.kind, context),
                 "context": context,
+                "label": (
+                    next(
+                        (t for e, t in reversed(sub_spans) if e <= g.src_start),
+                        "",
+                    )
+                    if g.kind == "submittal-review"
+                    else ""
+                ),
                 "offset": g.src_start,
                 "char_start": g.char_start,
                 "char_end": g.char_end,
+                "note_guidance": next(
+                    (t for e, t in reversed(note_ends) if e <= g.src_start), ""
+                ),
             }
         )
 
-    # Tailoring
+    # Tailoring — the profile is keyed by INDIVIDUAL option names: a joint
+    # OPT="AIR FORCE,NAVY" block is removed only when ALL its names are
+    # "remove" (generate.removable comma-splits), so each name gets its own
+    # row and the joint block's counters are credited to every name.
     tai_counts: dict[str, dict] = {}
+    n_tai_blocks = 0
     for tai in root.iter("TAI"):
-        opt = tai.attrs.get("OPT", "?")
-        entry = tai_counts.setdefault(opt, {"blocks": 0, "chars": 0})
-        entry["blocks"] += 1
-        entry["chars"] += len(tai.text())
+        n_tai_blocks += 1
+        chars = len(tai.text())
+        for name in tai.attrs.get("OPT", "?").split(","):
+            entry = tai_counts.setdefault(name.strip(), {"blocks": 0, "chars": 0})
+            entry["blocks"] += 1
+            entry["chars"] += chars
 
     # Submittals: grouped walk inside the SUBMITTALS subpart, usage elsewhere
     submittal_items: list[dict] = []
@@ -193,10 +249,52 @@ def build_manifest(sec: SecFile) -> dict:
         if not any(a.name == "REF" for a in rid.ancestors()):
             used_ids.add(_WS_RE.sub(" ", rid.text()).strip())
 
-    kinds = {"choice": 0, "blank": 0, "optional": 0}
+    # Legacy kinds are seeded so counts always carry kind_choice/kind_blank/
+    # kind_optional (cli.cmd_report subscripts them); new kinds count in too.
+    kinds: dict[str, int] = {"choice": 0, "blank": 0, "optional": 0}
     for d in decisions:
-        kinds[d["kind"]] += 1
+        kinds[d["kind"]] = kinds.get(d["kind"], 0) + 1
     body_decisions = [d for d in decisions if not d["in_note"]]
+
+    def _content_span(el: Element) -> list[int] | None:
+        if el.self_closing:
+            return None
+        a = bisect.bisect_left(_offs, el.src_start + len(el.open_raw))
+        b = bisect.bisect_left(_offs, el.src_end - len(el.close_raw))
+        return [a, b]
+
+    tailoring_spans = [
+        {"opt": t.attrs.get("OPT", "?"), "span": _content_span(t)}
+        for t in root.iter("TAI")
+        if _content_span(t) is not None
+    ]
+
+    unit_spans: list[dict] = []
+
+    def _walk_units(el: Element) -> None:
+        kids = [c for c in el.children if isinstance(c, Element)]
+        i = 0
+        while i < len(kids):
+            c = kids[i]
+            if c.name == "NTE":  # designer-note text is never edited
+                i += 1
+                continue
+            if c.name == "MET":
+                eng = kids[i + 1] if i + 1 < len(kids) and kids[i + 1].name == "ENG" else None
+                unit_spans.append(
+                    {"met": _content_span(c),
+                     "eng": _content_span(eng) if eng is not None else None}
+                )
+                if eng is not None:
+                    i += 2
+                    continue
+            elif c.name == "ENG":
+                unit_spans.append({"met": None, "eng": _content_span(c)})
+            else:
+                _walk_units(c)
+            i += 1
+
+    _walk_units(root)
 
     return {
         "section": _WS_RE.sub(" ", scn.text()).strip() if scn is not None else "?",
@@ -208,23 +306,27 @@ def build_manifest(sec: SecFile) -> dict:
             "bracket_groups_total": len(decisions),
             "bracket_groups_in_body": len(body_decisions),
             "bracket_groups_in_notes": len(decisions) - len(body_decisions),
-            **{f"kind_{k}": v for k, v in kinds.items()},
-            "tailoring_blocks": sum(v["blocks"] for v in tai_counts.values()),
+            **{f"kind_{k}": v for k, v in sorted(kinds.items())},
+            "tailoring_blocks": n_tai_blocks,
             "notes_to_specifier": sum(1 for _ in root.iter("NTE")),
             "submittal_items": len(submittal_items),
             "references_declared": len(declared),
             "references_used_in_body": len(used_ids),
             "references_declared_but_unused": sorted(declared_ids - used_ids),
             "references_used_but_undeclared": sorted(used_ids - declared_ids),
+            "unit_pairs": len(unit_spans),
         },
         "tailoring_options": {
             k: v for k, v in sorted(tai_counts.items(), key=lambda kv: -kv[1]["chars"])
         },
+        "tailoring_spans": tailoring_spans,
         "decisions": decisions,
         "submittals": submittal_items,
         "references": declared,
+        "unit_spans": unit_spans,
         "body_submittal_tag_uses": body_sub_uses,
         # full tag-free text of the section; char_start/char_end above index
         # into this, so a UI can show every decision in situ
         "text": stream,
+        "nav": nav,
     }

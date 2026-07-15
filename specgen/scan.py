@@ -21,6 +21,15 @@ from .secfile import _parse_tag
 
 _BLANK_RE = re.compile(r"^[\s_]*_[\s_]*$")
 _WS_RE = re.compile(r"\s+")
+# Tags that are invisible in the rendered section: a gap made only of these
+# (and spaces/tabs) leaves two bracket spans visually adjacent — one choice.
+_INVISIBLE_GAP_RE = re.compile(
+    r"^(?:[ \t]|</?(?:SPT|TAI|MET|ENG)(?:\s[^>]*)?>)+$"
+)
+# "[; <SUB>G, [_____]</SUB>]" (G or S, optional <TAI> wrapping): the
+# submittal-classification idiom — keep/remove the reviewer flag and
+# fill in the reviewing office.
+_SUBREV_RE = re.compile(r"^;?\s*<SUB>\s*[GS]\b")
 
 
 @dataclass
@@ -40,6 +49,7 @@ class Group:
     char_start: int  # span in the tag-free text stream (for context)
     char_end: int = -1
     safe: bool = True  # tag-balanced: group and options can be spliced safely
+    in_note: bool = False  # inside <NTE>: guidance text, never a decision
 
 
 def balanced(src_slice: str) -> bool:
@@ -71,11 +81,13 @@ def balanced(src_slice: str) -> bool:
     return not stack
 
 
-def text_stream(src: str) -> tuple[str, list[int]]:
-    """Return (chars, offsets): the concatenation of all text outside markup,
-    with offsets[i] = source offset of chars[i]."""
+def text_stream(src: str) -> tuple[str, list[int], list[bool]]:
+    """Return (chars, offsets, mask): text outside markup, source offset of
+    each char, and mask[i]=True when the char is inside an <NTE> note."""
     chars: list[str] = []
     offs: list[int] = []
+    mask: list[bool] = []
+    nte_depth = 0
     i, n = 0, len(src)
     while i < n:
         if src[i] == "<":
@@ -84,12 +96,20 @@ def text_stream(src: str) -> tuple[str, list[int]]:
             elif src.startswith("<?", i):
                 i = src.find("?>", i) + 2
             else:
-                _, i = _parse_tag(src, i)
+                raw, i = _parse_tag(src, i)
+                body = raw[1:-1]
+                if body.startswith("/"):
+                    if body[1:].strip() == "NTE":
+                        nte_depth = max(0, nte_depth - 1)
+                elif not body.rstrip().endswith("/"):
+                    if body.split()[0].strip() == "NTE":
+                        nte_depth += 1
         else:
             chars.append(src[i])
             offs.append(i)
+            mask.append(nte_depth > 0)
             i += 1
-    return "".join(chars), offs
+    return "".join(chars), offs, mask
 
 
 def classify(options: list[str]) -> str:
@@ -102,7 +122,7 @@ def classify(options: list[str]) -> str:
 
 def scan_groups(src: str) -> tuple[list[Group], str, list[int]]:
     """Scan the source and return (groups, text_stream, offsets)."""
-    text, offs = text_stream(src)
+    text, offs, mask = text_stream(src)
     groups: list[Group] = []
     i, n = 0, len(text)
     while i < n:
@@ -110,6 +130,7 @@ def scan_groups(src: str) -> tuple[list[Group], str, list[int]]:
             i += 1
             continue
         group_char_start = i
+        in_note = mask[i]
         options: list[Option] = []
         end = i
         while i < n and text[i] == "[":
@@ -138,10 +159,12 @@ def scan_groups(src: str) -> tuple[list[Group], str, list[int]]:
             # adjacent = next '[' with ONLY spaces/tabs between them in the
             # RAW source too (no markup) — a tag between bracket spans means
             # they belong to different structural elements
+            gap = src[offs[end - 1] + 1 : offs[k]] if k < n else ""
             if (
                 k < n
                 and text[k] == "["
-                and src[offs[end - 1] + 1 : offs[k]].strip(" \t") == ""
+                and mask[k] == in_note
+                and (gap.strip(" \t") == "" or _INVISIBLE_GAP_RE.match(gap))
             ):
                 i = k
             else:
@@ -162,8 +185,14 @@ def scan_groups(src: str) -> tuple[list[Group], str, list[int]]:
                     char_start=group_char_start,
                     char_end=end,
                     safe=safe,
+                    in_note=in_note,
                 )
             )
+            g = groups[-1]
+            if g.kind == "optional" and len(g.options) == 1:
+                raw_opt = src[g.options[0].src_start : g.options[0].src_end]
+                if _SUBREV_RE.match(raw_opt.strip()):
+                    g.kind = "submittal-review"
         else:
             i = group_char_start + 1
     return groups, text, offs

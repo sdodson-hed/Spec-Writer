@@ -12,6 +12,11 @@ reordering):
   - profile: {option or setting name: "keep" | "remove"}
   - answers: {decision id: {"answer": str, "notes": str}}
 
+`read_answers_json` additionally passes through manual text edits (keys
+prefixed ``ME@``, as exported by the HTML decision page) with their
+{"start", "end", "before", "after", "notes"} fields. The .xlsx workbook path
+has no manual-edit support: direct text editing is JSON/HTML only.
+
 Answer cell semantics (case-insensitive keywords):
   choice   -> option number ("2"), several numbers ("1,3"), exact option
               text, "delete" (remove the whole group), or custom text
@@ -33,6 +38,10 @@ from openpyxl.worksheet.datavalidation import DataValidation
 # Special Profile-sheet key: resolves every plural [s] marker in one answer.
 PLURAL_KEY = "PLURAL MARKERS [s]"
 
+# Special Profile-sheet key: SI vs inch-pound units — one answer resolves
+# every <MET>/<ENG> pair in the section.
+UNITS_KEY = "UNITS OF MEASURE (SI/IP)"
+
 _HEADER_FILL = PatternFill("solid", fgColor="1F4E79")
 _HEADER_FONT = Font(color="FFFFFF", bold=True)
 _DUP_FONT = Font(color="808080", italic=True)
@@ -40,6 +49,7 @@ _KIND_FILL = {
     "choice": PatternFill("solid", fgColor="FFF2CC"),
     "blank": PatternFill("solid", fgColor="D9EAD3"),
     "optional": PatternFill("solid", fgColor="EAD1DC"),
+    "submittal-review": PatternFill("solid", fgColor="DDEBF7"),
 }
 
 README = """HOW TO FILL IN THIS WORKBOOK
@@ -68,6 +78,9 @@ Profile sheet - project-wide settings:
   PLURAL MARKERS [s]: keep = plural wording (multiple units, "Chillers"),
                       remove = singular ("Chiller"). One answer covers
                       every [s] in the section.
+  UNITS OF MEASURE (SI/IP): SI = keep metric values, IP = keep inch-pound
+                      values. One answer resolves every <MET>/<ENG> pair
+                      in the section.
 """
 
 
@@ -105,6 +118,11 @@ def write_workbook(manifest: dict, out_path: Path | str) -> None:
             opts_display = "(fill in a value)"
         elif d["kind"] == "optional":
             opts_display = f"optional text: {_short(opts[0], 90)}"
+        elif d["kind"] == "submittal-review":
+            opts_display = (
+                "keep = Government-reviewed (G); in the HTML page you can also "
+                "set the reviewer office; delete = for-information-only"
+            )
         else:
             opts_display = "  |  ".join(
                 f"{i}) {_short(o, 55)}" for i, o in enumerate(opts, 1)
@@ -135,7 +153,7 @@ def write_workbook(manifest: dict, out_path: Path | str) -> None:
                 ws.cell(row=row, column=col).font = _DUP_FONT
         answer_cell = ws.cell(row=row, column=8)
         answer_cell.alignment = Alignment(wrap_text=True, vertical="top")
-        if d["kind"] == "optional":
+        if d["kind"] in ("optional", "submittal-review"):
             keep_del.add(answer_cell)
         elif d["kind"] == "choice":
             formula = '"' + ",".join(
@@ -172,6 +190,14 @@ def write_workbook(manifest: dict, out_path: Path | str) -> None:
         ps.append([opt, v["blocks"], v["chars"], ""])
         action_dv.add(ps.cell(row=prow, column=4))
         prow += 1
+    units_dv = DataValidation(
+        type="list", formula1='"SI,IP"', allow_blank=True, showErrorMessage=False
+    )
+    ps.add_data_validation(units_dv)
+    if manifest["counts"].get("unit_pairs"):
+        ps.append([UNITS_KEY, manifest["counts"]["unit_pairs"], "", ""])
+        units_dv.add(ps.cell(row=prow, column=4))
+        prow += 1
     n_plural = sum(1 for d in manifest["decisions"] if d.get("plural"))
     if n_plural:
         ps.append([PLURAL_KEY, n_plural, "", ""])
@@ -196,17 +222,37 @@ def read_answers_json(path: Path | str) -> tuple[dict[str, str], dict[str, dict]
     profile = {
         k: str(v).strip().lower()
         for k, v in (data.get("profile") or {}).items()
-        if str(v).strip().lower() in ("keep", "remove")
+        if str(v).strip().lower() in ("keep", "remove", "si", "ip")
     }
     answers: dict[str, dict] = {}
     for gid, v in (data.get("answers") or {}).items():
+        key = str(gid).strip()
+        if key.startswith("ME@"):
+            if not isinstance(v, dict):
+                continue  # malformed manual edit: skip
+            try:
+                start, end = int(v["start"]), int(v["end"])
+            except (KeyError, TypeError, ValueError):
+                continue  # non-int-able start/end: skip
+            before, after = v.get("before"), v.get("after")
+            if not isinstance(before, str) or not isinstance(after, str):
+                continue  # missing/non-string before/after: skip
+            rec = {"start": start, "end": end, "before": before, "after": after}
+            notes = v.get("notes")
+            rec["notes"] = notes.strip() if isinstance(notes, str) else ""
+            answers[key] = rec
+            continue
         if isinstance(v, dict):
             ans = str(v.get("answer", "")).strip()
             notes = str(v.get("notes", "")).strip()
         else:
             ans, notes = str(v).strip(), ""
+        office = str(v.get("office", "")).strip() if isinstance(v, dict) else ""
         if ans or notes:
-            answers[str(gid).strip()] = {"answer": ans, "notes": notes}
+            rec = {"answer": ans, "notes": notes}
+            if office:
+                rec["office"] = office
+            answers[key] = rec
     return profile, answers
 
 
@@ -245,6 +291,6 @@ def read_workbook(path: Path | str) -> tuple[dict[str, str], dict[str, dict]]:
             if not row or not row[key_i]:
                 continue
             action = "" if len(row) <= act_i or row[act_i] is None else str(row[act_i]).strip().lower()
-            if action in ("keep", "remove"):
+            if action in ("keep", "remove", "si", "ip"):
                 profile[str(row[key_i]).strip()] = action
     return profile, answers

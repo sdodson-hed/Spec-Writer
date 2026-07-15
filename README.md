@@ -12,6 +12,10 @@ tailoring option, submittal, and reference a section demands of a specifier.
 - Decision manifests generated for the Maxwell pilot sections:
   - `23 64 10` Water Chillers, Vapor Compression Type (147 bracket groups)
   - `23 64 26` Chilled/Chilled-Hot/Condenser Water Piping Systems
+- Completeness audit enforced corpus-wide: unknown bracket tokens and nested
+  structure violations caught in CI (all 55 masters audit-clean).
+- Markup signals surfaced: units (SI/IP), submittal-review groups, and
+  markup-split conflicts all detectable and traceable in manifests and reports.
 - XSD validation wired up but the official schema
   (`si.ksc.nasa.gov/sidownloads/xml/specsintactSEC.xsd`) was unreachable —
   drop it into `schema/` when obtainable (it ships with the SpecsIntact
@@ -28,6 +32,10 @@ python -m specgen answers   "masters/23 64 10.SEC" -o out/answers.xlsx
 python -m specgen html      "masters/23 64 10.SEC" -o out/decisions.html
 python -m specgen generate  "masters/23 64 10.SEC" \
     --answers out/answers.xlsx -o out/generated/23_64_10.sec   # or .json
+python -m specgen audit     "masters/23 64 10.SEC"               # completeness gate
+python -m specgen generate  ... --revisions   # also emit .revisions.sec (SI tracked changes)
+python scripts/audit_corpus.py                # audit + round-trip all 55 masters
+python scripts/build_project.py <dir> <masters...>   # per-project batch + index
 ```
 
 ## The answer-file workflow (no platform integration required)
@@ -38,6 +46,11 @@ python -m specgen generate  "masters/23 64 10.SEC" \
    workbook for engineers who prefer a spreadsheet. Both cover: choices,
    blanks, optionals, duplicate propagation, and a Project Profile block
    (tailoring keep/remove, plural [s] markers).
+   The page also has an Edit mode: click Edit and type directly in the
+   document like a tracked-changes Word doc — insertions show green,
+   deletions show red strikethrough, and every change exports as an ME@
+   record that `generate` applies and `--revisions` renders as native
+   SpecsIntact ADD/DEL markup.
 2. An engineer — or, later, the Hedral platform — fills in the answers.
 3. `generate` accepts either the .xlsx or the exported .json (they are
    provably equivalent) and applies them: resolves brackets, strips removed
@@ -47,6 +60,16 @@ python -m specgen generate  "masters/23 64 10.SEC" \
    (parse, round-trip, well-formed) before it is written; unanswered
    decisions are never defaulted. Structurally unsafe groups (bracket spans
    crossing markup unevenly) are flagged for manual editing, never touched.
+
+Shared-drive workflow: `build_project.py` sets up a per-project layout
+(`decisions/`, `answers/`, `generated/`, `index.html`) that organizes manifests,
+filled-in answers, and generated outputs. Export from the HTML or Excel
+interface produces an answers file that explicitly marks any unanswered
+decisions, so the engineer can verify completeness before generation. When
+`generate` is invoked with `--revisions`, both `.sec` and `.revisions.sec` are
+written; the `.revisions.sec` file opens directly in SpecsIntact with native
+red/green tracked-change markup, bridging the workflow back to the existing QA
+tools.
 
 Demo: `python scripts/maxwell_demo.py` fills the 23 64 10 workbook with the
 Maxwell AFB values (air-cooled, electric drive, scroll, Air Force tailoring)
