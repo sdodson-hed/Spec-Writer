@@ -90,6 +90,18 @@ eq(odText(gapRuns(TEXT, r.records, S, E)), TEXT.slice(S, E), "o+d invariant");
 // "234" + "56"(struck) + "xxx"(ins) + "789AB"; orig 9 ("9") -> display 10
 let runs2 = gapRuns(TEXT, {"ME@5":{start:5,end:7,before:"56",after:"xxx",notes:""}}, S, E);
 eq(origToDisplay(runs2, S, 9), 10, "orig offset through a d+i cluster");
+
+// DOM<->display conversion: the HTML parser collapses \r\n to \n, so a \r
+// followed by \n is zero-width in the DOM
+const D = "ab\r\ncd\r\nef";
+eq(dispToDom(D, D.length), 8, "CRLF pairs are one DOM char");
+eq(domToDisp(D, 8), D.length, "DOM end maps to display end");
+eq(dispToDom(D, 4), 3, "display offset after a CRLF pair");
+eq(domToDisp(D, 3), 4, "DOM offset after the collapsed newline");
+eq(domToDisp(D, 2), 2, "end-of-line DOM caret maps before the \\r");
+eq(dispToDom(D, 2), 2, "display offset before the \\r round-trips");
+eq(domToDisp("abc", 2), 2, "LF-free text is identity");
+eq(dispToDom("a\rb", 3), 3, "lone \\r keeps its width (parser turns it into \\n)");
 console.log("OK");
 """
 

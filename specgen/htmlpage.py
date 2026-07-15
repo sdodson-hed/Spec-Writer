@@ -92,6 +92,28 @@ function runsToRecords(runs, gapStart, oldRecords) {
   }
   return recs;
 }
+// The HTML parser collapses \r\n to \n when a gap's innerHTML is parsed, so
+// DOM text nodes are shorter than the model's display text wherever the
+// master file uses CRLF line endings. These two convert between DOM offsets
+// (what Selection/Range report) and display offsets (what the run model
+// uses): a \r immediately followed by \n in the display text D is zero-width
+// in the DOM. A lone \r becomes \n in the DOM (same length, so no-op here).
+function domToDisp(D, dom) {
+  // smallest display offset whose DOM-projected prefix length is `dom`
+  // (ties resolve before the \r of a CRLF pair, never between \r and \n)
+  let k = 0;
+  for (let i = 0; i < D.length; i++) {
+    if (k >= dom) return i;
+    if (!(D[i] === "\r" && D[i + 1] === "\n")) k++;
+  }
+  return D.length;
+}
+function dispToDom(D, disp) {
+  let k = 0;
+  for (let i = 0; i < disp && i < D.length; i++)
+    if (!(D[i] === "\r" && D[i + 1] === "\n")) k++;
+  return k;
+}
 function origToDisplay(runs, gapStart, origOff) {
   let disp = 0, orig = gapStart;
   for (const r of runs) {
@@ -1034,34 +1056,39 @@ function textLenNoAnchors(n) {
   for (const c of n.childNodes) sum += textLenNoAnchors(c);
   return sum;
 }
+function gapDisplayText(gapEl) {
+  // the run model's display text for this gap (CRLF preserved — the DOM's
+  // parser-normalized projection of it is what textLenNoAnchors measures)
+  return gapRuns(DATA.text, state.edits, +gapEl.dataset.s, +gapEl.dataset.e)
+    .map(r => r.text).join("");
+}
 function dispOffset(gapEl, node, off) {
-  // display offset of (node, off) within the gap, skipping anchor content
+  // display offset of (node, off) within the gap: count DOM chars before the
+  // caret (skipping anchor content), then map DOM->display so \r\n pairs the
+  // parser collapsed to \n count two chars, like the run model expects
+  let sum;
   if (node.nodeType !== 3) {
-    let sum = 0;
+    sum = 0;
     const el = node;
     if (!gapEl.contains(el)) return null;
     for (let i = 0; i < off && i < el.childNodes.length; i++)
       sum += textLenNoAnchors(el.childNodes[i]);
-    // add everything before `el` inside the gap
-    let n2 = el;
-    while (n2 !== gapEl) {
-      let sib = n2.previousSibling;
-      while (sib) { sum += textLenNoAnchors(sib); sib = sib.previousSibling; }
-      n2 = n2.parentNode;
-    }
-    return sum;
+  } else {
+    if (node.parentElement.closest(".navanchor")) return null;
+    sum = off;
   }
-  if (node.parentElement.closest(".navanchor")) return null;
-  let sum = off, n2 = node;
+  // add everything before `node` inside the gap
+  let n2 = node;
   while (n2 !== gapEl) {
     let sib = n2.previousSibling;
     while (sib) { sum += textLenNoAnchors(sib); sib = sib.previousSibling; }
     n2 = n2.parentNode;
     if (!n2) return null;
   }
-  return sum;
+  return domToDisp(gapDisplayText(gapEl), sum);
 }
 function setCaretAt(gapEl, disp) {
+  const dom = dispToDom(gapDisplayText(gapEl), disp);
   const sel = window.getSelection();
   const place = (node, off) => {
     const r = document.createRange();
@@ -1075,7 +1102,7 @@ function setCaretAt(gapEl, disp) {
   while ((n = walker.nextNode())) {
     if (n.parentElement.closest(".navanchor")) continue;
     const len = n.textContent.length;
-    if (disp <= pos + len) { place(n, disp - pos); return; }
+    if (dom <= pos + len) { place(n, dom - pos); return; }
     pos += len;
     last = n;
   }
