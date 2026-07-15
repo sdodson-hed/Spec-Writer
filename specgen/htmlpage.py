@@ -541,7 +541,10 @@ function computeDocAnchors(roots) {
     }
   docAnchors = anchors;
 }
-const lockedOrigMemo = new Map();  // safe: DATA.decisions never changes
+// Memo is keyed by full-gap bounds only (callers pass gap [s,e), never
+// per-render windows), so it stays bounded by the number of gaps.
+// Safe to cache forever: DATA.decisions never changes.
+const lockedOrigMemo = new Map();
 function lockedOrigIn(s, e) {
   const key = s + ":" + e;
   let v = lockedOrigMemo.get(key);
@@ -554,8 +557,10 @@ function lockedOrigIn(s, e) {
   }
   return v;
 }
-function origHtml(gapStart, a, b, emitted, rec) {
+function origHtml(gapStart, a, b, emitted, rec, locked) {
   // original text slice [a,b) with nav anchors and locked-span tints.
+  // `locked` is the gap's full locked-range list (from lockedOrigIn on the
+  // whole gap); only ranges fully contained in [a,b) are rendered here.
   // `rec` (if given) is the edit record whose original span [r.start, r.end)
   // immediately follows this window (b === rec.start): an anchor that falls
   // strictly inside that span is clamped to rec.start so it still renders
@@ -571,8 +576,8 @@ function origHtml(gapStart, a, b, emitted, rec) {
     })
     .filter(m => m.at >= a && m.at <= b)
     .map(m => { emitted.add(m.an.i); return { at: m.at, anchor: m.an.i }; });
-  for (const [ls, le] of lockedOrigIn(a, b))
-    marks.push({ at: ls, lockEnd: le });
+  for (const [ls, le] of locked)
+    if (ls >= a && le <= b) marks.push({ at: ls, lockEnd: le });
   marks.sort((x, y) => x.at - y.at);
   let html = "", pos = a;
   for (const m of marks) {
@@ -596,9 +601,10 @@ function gapInner(s, e) {
     .filter(r => r.start >= s && r.end <= e)
     .sort((a, b) => a.start - b.start);
   const emitted = new Set();
+  const locked = lockedOrigIn(s, e);
   let html = "", pos = s;
   for (const r of recs) {
-    html += origHtml(s, pos, r.start, emitted, r);
+    html += origHtml(s, pos, r.start, emitted, r, locked);
     const id = "ME@" + r.start;
     if (state.view === "redline") {
       if (r.before) html += `<s class="me" data-me="${esc(id)}">${esc(r.before)}</s>`;
@@ -608,7 +614,7 @@ function gapInner(s, e) {
     }
     pos = r.end;
   }
-  html += origHtml(s, pos, e, emitted, null);
+  html += origHtml(s, pos, e, emitted, null, locked);
   return html;
 }
 function gapAttrs() {
@@ -987,13 +993,19 @@ function renderMeCard(p) {
   h += `<div class="muted" style="margin-top:6px">All retyping happens in the
     document — turn Edit on and type. This card reviews one change.</div>`;
   p.innerHTML = h;
+  // handlers must re-read state.edits[meCardId] at event time: edit ops swap
+  // in fresh record objects (replaceEditsIn), orphaning any `rec` captured at
+  // render time — writing the note to that dead object would silently lose it.
   document.getElementById("meNotes").onchange = ev => {
-    rec.notes = ev.target.value.trim();
+    const cur = state.edits[meCardId];
+    if (!cur) return;
+    cur.notes = ev.target.value.trim();
     save();
   };
   document.getElementById("meRevert").onclick = () => {
-    delete state.edits[meCardId];
+    if (state.edits[meCardId]) delete state.edits[meCardId];
     meCardId = null;
+    editUndo = []; editRedo = [];  // revert bypasses the undo system
     save(); buildDoc(); refresh();
   };
 }
@@ -1112,9 +1124,18 @@ function applyDocOp(ctx, op) {
   editRedo = [];
   save();
   renderGap(ctx.gap);
+  // If the review card is open, refresh it passively so it shows the fresh
+  // record (or closes when the record no longer exists). renderPanel only
+  // rewrites the side panel's innerHTML and never calls focus(), but restore
+  // the document caret AFTER it anyway so it cannot disturb the selection.
+  if (meCardId) renderPanel();
   setCaretAt(ctx.gap, res.caret);
   updateProgress();
 }
+// Known, spec-scoped-out limitation: insertCompositionText (IME) is not
+// cancelable, so preventDefault can't block it — composition mutates the DOM
+// untracked until the next op re-renders the gap from records. Records remain
+// the source of truth, so no offset corruption reaches state or export.
 function onBeforeInput(ev) {
   if (!editMode) return;
   ev.preventDefault();
@@ -1208,6 +1229,9 @@ function renderProfile() {
     row.querySelectorAll(".seg button").forEach(b => b.onclick = () => {
       state.profile[it.key] = state.profile[it.key] === b.dataset.v ? "" : b.dataset.v;
       if (!state.profile[it.key]) delete state.profile[it.key];
+      // profile changes can move gap boundaries (buildDoc below); stale undo
+      // steps keyed to old data-s offsets would corrupt the record set.
+      editUndo = []; editRedo = [];
       save(); renderProfile(); updateProgress();
       if (it.key === UNITS_KEY || DATA.tailoring_options[it.key]) buildDoc();
     });

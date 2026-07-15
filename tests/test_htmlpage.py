@@ -251,7 +251,6 @@ def test_edit_mode_hooks_present(tmp_path):
 
 def test_edit_mode_forces_redline_view(tmp_path):
     html = _page(tmp_path)
-    body = html.split('id="btnEdit"')[0]  # anywhere is fine; assert on JS
     assert 'state.view = "redline"' in html
     assert "btnView\").disabled = editMode" in html.replace("'", '"')
 
@@ -261,6 +260,42 @@ def test_edit_ops_check_locked_ranges(tmp_path):
     body = html.split("function applyDocOp(")[1].split("\nfunction ")[0]
     assert "lockedOrigIn(" in body
     assert "blocked" in body
+
+
+def test_me_card_handlers_look_up_record_at_event_time(tmp_path):
+    # Every edit op swaps FRESH record objects into state.edits
+    # (replaceEditsIn), so a `rec` captured when the review card rendered can
+    # be orphaned by the next keystroke: a note typed afterwards would write
+    # to the dead object and be silently lost. The note handler must re-read
+    # state.edits[meCardId] at event time and bail if the record is gone.
+    html = _page(tmp_path)
+    card = html.split("function renderMeCard(")[1].split("\nfunction ")[0]
+    notes = card.split('getElementById("meNotes")')[1].split(
+        'getElementById("meRevert")')[0]
+    assert "state.edits[meCardId]" in notes
+    assert "if (!" in notes  # missing-record guard
+
+
+def test_apply_doc_op_refreshes_open_card_before_caret_restore(tmp_path):
+    # While the review card is open, each keystroke rewrites the record set,
+    # so applyDocOp must passively re-render the panel (renderMeCard via
+    # renderPanel) — and do it BEFORE setCaretAt so the panel rewrite cannot
+    # disturb the document selection it restores.
+    html = _page(tmp_path)
+    body = html.split("function applyDocOp(")[1].split("\nfunction ")[0]
+    assert "renderPanel()" in body
+    assert body.index("renderPanel()") < body.index("setCaretAt(")
+
+
+def test_undo_stacks_cleared_on_revert_and_profile_change(tmp_path):
+    # meRevert deletes a record outside the undo system, and profile toggles
+    # rebuild the doc with different gap boundaries; either way a later
+    # Ctrl+Z could restore records keyed to a data-s that no longer renders.
+    html = _page(tmp_path)
+    revert = html.split('getElementById("meRevert")')[1].split("};")[0]
+    assert "editUndo = []" in revert and "editRedo = []" in revert
+    prof = html.split("function renderProfile(")[1].split("\nfunction ")[0]
+    assert "editUndo = []" in prof and "editRedo = []" in prof
 
 
 def test_gap_anchor_render_is_deduped_and_clamped(tmp_path):
