@@ -175,6 +175,25 @@ def test_manual_text_edit_hooks_present(tmp_path):
     assert "Revert this change" in html
 
 
+def test_unsafe_card_copy_points_to_si_editor(tmp_path):
+    html = _page(tmp_path)
+    assert (
+        "This bracket crosses structural markup and can't be answered as a "
+        "choice; it is flagged in the unresolved report for manual editing "
+        "in SI Editor after generation."
+    ) in html
+    assert "edit it directly instead" not in html
+
+
+def test_decision_card_has_edit_text_button(tmp_path):
+    html = _page(tmp_path)
+    assert 'data-act="edittext"' in html
+    assert "Edit text…" in html
+    # submittal-review card gains the freeform custom-text input
+    sub = html.split('d.kind === "submittal-review"')[2]
+    assert "freeform(d, e" in sub.split("} else if")[0]
+
+
 def test_select_and_replace_flow_removed(tmp_path):
     html = _page(tmp_path)
     assert "onDocMouseUp" not in html

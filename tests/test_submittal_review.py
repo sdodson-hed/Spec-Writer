@@ -56,3 +56,30 @@ def test_json_office_passthrough(tmp_path):
     )
     _, answers = read_answers_json(p)
     assert answers["BRK-0001"]["office"] == "AE"
+
+
+def test_generate_applies_custom_text_on_submittal_review(tmp_path):
+    # The decision page's freeform input stores literal text; generate must
+    # apply it to a submittal-review group like any custom answer, with
+    # working --revisions output.
+    from specgen.generate import generate, resolve_revisions, revert_revisions
+    from specgen import secfile
+    from specgen.manifest import build_manifest
+
+    src = SUBREV
+    p = tmp_path / "s.SEC"
+    p.write_bytes(src.encode(secfile.ENCODING))
+    m = build_manifest(secfile.parse(p))
+    subs = [d for d in m["decisions"] if d["kind"] == "submittal-review"]
+    assert subs, "fixture must scan as a submittal-review decision"
+    gid = subs[0]["id"]
+    out = tmp_path / "out.sec"
+    summary = generate(
+        p, {}, {gid: {"answer": "; G, RO"}}, out, revisions=True
+    )
+    text = out.read_bytes().decode(secfile.ENCODING)
+    assert "; G, RO" in text
+    rev = (tmp_path / "out.revisions.sec").read_bytes().decode(secfile.ENCODING)
+    assert resolve_revisions(rev) == text
+    assert revert_revisions(rev) == src
+    assert summary["unresolved"] == 0

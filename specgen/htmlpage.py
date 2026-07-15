@@ -789,7 +789,7 @@ function renderPanel() {
     <div style="font-size:12.5px;margin-top:6px">${esc(d.note_guidance)}</div></details>`;
   if (d.hint) h += `<div class="hint">${esc(d.hint)}</div>`;
   if (!d.safe) {
-    h += `<div class="dupnote">This bracket crosses structural markup and can't be answered as a choice; it is always listed in the unresolved report. You can select the text in the document and edit it directly instead.</div>` + navRow();
+    h += `<div class="dupnote">This bracket crosses structural markup and can't be answered as a choice; it is flagged in the unresolved report for manual editing in SI Editor after generation.</div>` + navRow();
     p.innerHTML = h; wireNav(p); return;
   }
   const overridden = state.answers[d.id] && state.answers[d.id].answer;
@@ -816,6 +816,7 @@ function renderPanel() {
     h += `<div class="freeform"><input type="text" data-office
       placeholder="reviewer office (e.g. AE) — optional"
       value="${esc(own.office || "")}"><button data-act="setoffice">Set</button></div>`;
+    h += freeform(d, e, "…or type replacement text");
   } else if (d.kind === "choice" && d.multi) {
     const eIdx = optionIdx(d, e.a);
     const picked = new Set(eIdx ? eIdx.map(i => String(i + 1)) : []);
@@ -843,6 +844,7 @@ function renderPanel() {
   }
   h += `<div class="notes-row"><input data-notes
         placeholder="note for the audit log (optional)" value="${esc(own.notes || "")}"></div>`;
+  h += `<div class="navrow"><button data-act="edittext">Edit text… (start from the original)</button></div>`;
   h += navRow();
   p.innerHTML = h;
   p.querySelectorAll(".opts button[data-val]").forEach(b =>
@@ -867,6 +869,14 @@ function renderPanel() {
   if (btn) btn.onclick = () => { if (inp.value.trim()) setAnswer(d.id, inp.value.trim()); };
   if (inp) inp.onkeydown = ev => { if (ev.key === "Enter" && inp.value.trim())
     setAnswer(d.id, inp.value.trim()); };
+  const et = p.querySelector("[data-act=edittext]");
+  if (et) et.onclick = () => {
+    const ci = p.querySelector("[data-custom]");
+    if (ci) {
+      ci.value = DATA.text.slice(d.char_start, d.char_end);
+      ci.focus();
+    }
+  };
   const notes = p.querySelector("[data-notes]");
   if (notes) notes.onchange = () => setNotes(d.id, notes.value.trim());
   const off = p.querySelector("[data-office]");
