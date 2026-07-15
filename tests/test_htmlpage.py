@@ -215,3 +215,22 @@ def test_prune_stale_edits_also_drops_conflicting_imports(tmp_path):
     html = _page(tmp_path)
     body = html.split("function pruneStaleEdits()")[1].split("\nfunction ")[0]
     assert "meConflict(" in body
+
+
+def test_gap_anchor_render_is_deduped_and_clamped(tmp_path):
+    # A nav anchor whose offset falls strictly inside a manual edit's
+    # original span [r.start, r.end) must not be silently dropped: gapInner's
+    # origHtml windows only cover [pos, r.start) and [r.end, ...), excluding
+    # the record's interior. The fix clamps such an anchor to r.start (so the
+    # window ending at r.start renders it) and tracks already-emitted anchor
+    # indices across the gap's windows so a zero-length (pure insertion)
+    # record can't have its boundary anchor satisfy both neighboring windows
+    # and render twice.
+    html = _page(tmp_path)
+    gap_body = html.split("function gapInner(")[1].split("\nfunction ")[0]
+    assert "new Set()" in gap_body                 # emitted-anchor tracker
+    assert "emitted" in gap_body
+    orig_body = html.split("function origHtml(")[1].split("\nfunction ")[0]
+    assert "emitted.has(" in orig_body             # skip already-rendered anchors
+    assert "emitted.add(" in orig_body             # mark anchors as rendered
+    assert "rec.start" in orig_body and "rec.end" in orig_body  # clamp into record window

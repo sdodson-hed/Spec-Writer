@@ -540,11 +540,23 @@ function lockedOrigIn(s, e) {
     .map(d => [d.char_start, d.char_end])
     .sort((a, b) => a[0] - b[0]);
 }
-function origHtml(gapStart, a, b) {
-  // original text slice [a,b) with nav anchors and locked-span tints
+function origHtml(gapStart, a, b, emitted, rec) {
+  // original text slice [a,b) with nav anchors and locked-span tints.
+  // `rec` (if given) is the edit record whose original span [r.start, r.end)
+  // immediately follows this window (b === rec.start): an anchor that falls
+  // strictly inside that span is clamped to rec.start so it still renders
+  // (just before the record's strikethrough) instead of being dropped.
+  // `emitted` tracks anchor indices already rendered by an earlier window in
+  // this gap so a zero-length record can't cause the same anchor to satisfy
+  // both its neighboring windows and render twice.
   const marks = docAnchors
-    .filter(an => an.gap === gapStart && an.c >= a && an.c <= b)
-    .map(an => ({ at: an.c, anchor: an.i }));
+    .filter(an => an.gap === gapStart && !emitted.has(an.i))
+    .map(an => {
+      const at = rec && an.c > rec.start && an.c < rec.end ? rec.start : an.c;
+      return { an, at };
+    })
+    .filter(m => m.at >= a && m.at <= b)
+    .map(m => { emitted.add(m.an.i); return { at: m.at, anchor: m.an.i }; });
   for (const [ls, le] of lockedOrigIn(a, b))
     marks.push({ at: ls, lockEnd: le });
   marks.sort((x, y) => x.at - y.at);
@@ -569,9 +581,10 @@ function gapInner(s, e) {
   const recs = Object.values(state.edits || {})
     .filter(r => r.start >= s && r.end <= e)
     .sort((a, b) => a.start - b.start);
+  const emitted = new Set();
   let html = "", pos = s;
   for (const r of recs) {
-    html += origHtml(s, pos, r.start);
+    html += origHtml(s, pos, r.start, emitted, r);
     const id = "ME@" + r.start;
     if (state.view === "redline") {
       if (r.before) html += `<s class="me" data-me="${esc(id)}">${esc(r.before)}</s>`;
@@ -581,7 +594,7 @@ function gapInner(s, e) {
     }
     pos = r.end;
   }
-  html += origHtml(s, pos, e);
+  html += origHtml(s, pos, e, emitted, null);
   return html;
 }
 function gapAttrs() {
