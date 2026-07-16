@@ -386,3 +386,12 @@ def test_gap_anchor_render_is_deduped_and_clamped(tmp_path):
     assert "emitted.has(" in orig_body             # skip already-rendered anchors
     assert "emitted.add(" in orig_body             # mark anchors as rendered
     assert "rec.start" in orig_body and "rec.end" in orig_body  # clamp into record window
+
+
+def test_duplicate_override_is_a_primary_button(tmp_path):
+    # The "Answer this instance differently" action was a bare text link and
+    # easy to miss; it must render as a full-width primary button (same style
+    # as "Next unanswered") while keeping the data-act hook the wiring uses.
+    html = _page(tmp_path)
+    assert '<button class="primary" data-act="override">' in html
+    assert '<a data-act="override">' not in html

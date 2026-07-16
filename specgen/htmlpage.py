@@ -897,8 +897,8 @@ function renderPanel() {
   if (d.duplicate_of && !overridden && !overrideIds.has(d.id)) {
     const srcTxt = e.a ? `following its answer: <b>${esc(e.a)}</b>` : "unanswered so far";
     h += `<div class="dupnote">Same decision as <a data-goto="${d.duplicate_of}">
-      ${d.duplicate_of}</a> — ${srcTxt}.<br>
-      <a data-act="override">Answer this instance differently…</a></div>` + navRow();
+      ${d.duplicate_of}</a> — ${srcTxt}.</div>
+      <div class="navrow"><button class="primary" data-act="override">Answer this instance differently…</button></div>` + navRow();
     p.innerHTML = h;
     p.querySelector("[data-act=override]").onclick = () => {
       overrideIds.add(d.id); renderPanel(); };
