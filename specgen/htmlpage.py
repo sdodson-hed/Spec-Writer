@@ -243,6 +243,43 @@ function applyGapOp(text, records, s, e, op, lockedOrig) {
   }
   return { records: recs, caret };
 }
+// ---- nested fill-in blanks (pure; string-only) ----
+// A choice option's tag-free text can carry nested [...] groups. Groups
+// whose inner text is only whitespace/underscores (with at least one
+// underscore — mirror of scan.py _BLANK_RE) are fill-in blanks the panel
+// prompts for; anything else stays embedded (OPEN@ backstop at generate).
+const NESTED_BLANK_RE = /^[\s_]*_[\s_]*$/;
+function nestedGroups(text) {
+  // top-level [...] spans, depth-counted so "[at [___] deg]" is one group.
+  // Any unbalanced "[" yields NO groups (matching scan.py, which only
+  // recognizes balanced spans) — better no prompt than a wrong compose.
+  const out = [];
+  let depth = 0, start = -1;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === "[") { if (depth === 0) start = i; depth++; }
+    else if (c === "]" && depth > 0) {
+      depth--;
+      if (depth === 0) {
+        const inner = text.slice(start + 1, i);
+        out.push({ start, end: i + 1, inner,
+                   isBlank: NESTED_BLANK_RE.test(inner) });
+      }
+    }
+  }
+  return depth === 0 ? out : [];
+}
+function composeFill(text, fills) {
+  // replace the k-th top-level BLANK group with fills[k] (document order);
+  // non-blank groups are preserved verbatim, brackets and all.
+  const blanks = nestedGroups(text).filter(g => g.isBlank);
+  let out = "", pos = 0;
+  blanks.forEach((g, k) => {
+    out += text.slice(pos, g.start) + (fills[k] == null ? "" : fills[k]);
+    pos = g.end;
+  });
+  return out + text.slice(pos);
+}
 """
 
 _TEMPLATE = r"""<!doctype html>
@@ -490,8 +527,36 @@ function resolvedText(d, a) {
   if (idx) return idx.map(i => d.options[i]).join(d.multi ? "\n" : " ");
   return a;  // out-of-range digits (or non-numeric) = literal custom text
 }
+// True iff a single-select choice's effective answer is a picked option
+// index whose text still carries fill-in blanks: the follow-up values are
+// not applied yet, so the decision stays open (progress, next-unanswered,
+// export gate) and the mark stays yellow.
+function pendingFills(d) {
+  if (!(d.kind === "choice" && !d.multi)) return false;
+  const idx = optionIdx(d, eff(d).a);
+  if (!idx || idx.length !== 1) return false;
+  return nestedGroups(d.options[idx[0]]).some(g => g.isBlank);
+}
+// Validated re-edit metadata from a stored/imported composed answer:
+// {option, fills} with the 1-based option in range and exactly one fill per
+// blank group. Stale imports (option out of range, blank count changed on a
+// master update) return null — the literal answer still renders correctly,
+// it just re-edits as plain custom text.
+function fillMeta(d, entry) {
+  if (!(d.kind === "choice" && !d.multi)) return null;
+  if (!entry || !Number.isInteger(entry.option) || !Array.isArray(entry.fills))
+    return null;
+  const o = d.options[entry.option - 1];
+  if (o === undefined) return null;
+  const blanks = nestedGroups(o).filter(g => g.isBlank);
+  if (!blanks.length || blanks.length !== entry.fills.length) return null;
+  return { option: entry.option, fills: entry.fills.map(String) };
+}
 function setAnswer(id, val) {
   const cur = state.answers[id] || {};
+  // every setAnswer path stores a non-composed answer, so stale
+  // option/fills metadata must not survive it
+  delete cur.option; delete cur.fills;
   if (cur.answer === val) delete cur.answer; else cur.answer = val;
   if (cur.answer || cur.notes) state.answers[id] = cur; else delete state.answers[id];
   save(); refresh();
@@ -755,6 +820,14 @@ function updateMark(d) {
     cls.push("todo");
     m.textContent = DATA.text.slice(d.char_start, d.char_end);
     m.title = "click to answer";
+  } else if (pendingFills(d)) {
+    // option picked but nested blanks unfilled: render the picked text so
+    // the engineer sees what they chose, but stay yellow until Apply
+    cls.push("todo");
+    m.className = cls.join(" ");
+    m.title = "fill in the blank value";
+    renderRedline(m, d, resolvedText(d, e.a));
+    return;
   } else {
     const txt = resolvedText(d, e.a);
     cls.push(txt === null ? "deleted" : "answered");
@@ -852,15 +925,35 @@ function renderPanel() {
       keep any combination.</div>`;
     h += `<div class="opts">` + d.options.map((o, i) =>
       `<button data-multi="${i + 1}" class="${picked.has(String(i + 1)) ? "on" : ""}">` +
-      `${picked.has(String(i + 1)) ? "☑" : "☐"} ${esc(o)}${nestedTag(o)}</button>`).join("") +
+      `${picked.has(String(i + 1)) ? "☑" : "☐"} ${esc(o)}${nestedTag(o, false)}</button>`).join("") +
       `<button data-val="delete" class="danger ${e.a === "delete" ? "on" : ""}">none of these — remove all</button></div>`;
     h += freeform(d, e, "…or type replacement text");
   } else if (d.kind === "choice") {
+    const meta = fillMeta(d, own);
     h += `<div class="hint">Choose one.</div>`;
     h += `<div class="opts">` + d.options.map((o, i) =>
-      `<button data-val="${i + 1}" class="${e.a == String(i + 1) ? "on" : ""}">` +
-      `${i + 1}) ${esc(o)}${nestedTag(o)}</button>`).join("") +
+      `<button data-val="${i + 1}" class="${e.a == String(i + 1) || (meta && meta.option === i + 1) ? "on" : ""}">` +
+      `${i + 1}) ${esc(o)}${nestedTag(o, true)}</button>`).join("") +
       `<button data-val="delete" class="danger ${e.a === "delete" ? "on" : ""}">remove entirely</button></div>`;
+    // follow-up prompt: option picked but blanks unfilled (pending), or a
+    // composed answer being re-edited (metadata validated by fillMeta)
+    const pendIdx = optionIdx(d, e.a);
+    const fillOpt = pendingFills(d) ? pendIdx[0] + 1 : meta ? meta.option : 0;
+    if (fillOpt) {
+      const oTxt = d.options[fillOpt - 1];
+      const blanks = nestedGroups(oTxt).filter(g => g.isBlank);
+      const fills = meta ? meta.fills : [];
+      h += `<div data-fillblock="${fillOpt}" style="margin-top:8px">
+        <div class="hint">Option ${fillOpt} has ${blanks.length} fill-in value(s) — type each, then Apply.</div>`;
+      blanks.forEach((g, k) => {
+        h += `<div class="loc">${esc(fillLabel(oTxt, g))}</div>
+          <div class="freeform"><input type="text" data-fill="${k}"
+          placeholder="value" value="${esc(fills[k] || "")}"></div>`;
+      });
+      h += `<div class="freeform"><button class="primary"
+        data-act="applyfills">Apply value(s)</button></div>
+        <div class="hint" data-fillmsg style="color:#b91c1c"></div></div>`;
+    }
     h += freeform(d, e, "…or type replacement text");
   } else if (d.kind === "optional") {
     h += `<div class="opts">
@@ -887,6 +980,7 @@ function renderPanel() {
       const val = [...picked].map(Number).sort((a, b2) => a - b2).join(",");
       // setAnswer toggles off when unchanged; force-set instead
       const rec = state.answers[d.id] || {};
+      delete rec.option; delete rec.fills;  // never composed-fill metadata
       if (val) rec.answer = val; else delete rec.answer;
       if (rec.answer || rec.notes) state.answers[d.id] = rec;
       else delete state.answers[d.id];
@@ -916,12 +1010,57 @@ function renderPanel() {
     else delete state.answers[d.id];
     save(); refresh();
   };
+  const fb = p.querySelector("[data-act=applyfills]");
+  if (fb) {
+    const fillInputs = [...p.querySelectorAll("input[data-fill]")];
+    const fmsg = p.querySelector("[data-fillmsg]");
+    const optNo = +p.querySelector("[data-fillblock]").dataset.fillblock;
+    const applyFills = () => {
+      const vals = fillInputs.map(x => x.value.trim());
+      if (vals.some(v => !v)) {
+        fmsg.textContent = "Fill in every value before applying.";
+        return;
+      }
+      const composed = composeFill(d.options[optNo - 1], vals);
+      if (optionIdx(d, composed) !== null) {
+        fmsg.textContent = "Add units or wording — a bare number " + composed +
+          " would be read as option " + composed + " when generating.";
+        return;
+      }
+      // setAnswer toggles off on an unchanged value; force-set the composed
+      // literal and keep the re-edit metadata on the record
+      const rec = state.answers[d.id] || {};
+      rec.answer = composed;
+      rec.option = optNo;
+      rec.fills = vals;
+      state.answers[d.id] = rec;
+      save(); refresh();
+    };
+    fb.onclick = applyFills;
+    fillInputs.forEach(x => x.onkeydown = ev => {
+      if (ev.key === "Enter") applyFills();
+    });
+    const firstEmpty = fillInputs.find(x => !x.value.trim());
+    if (firstEmpty) firstEmpty.focus();
+  }
   wireNav(p);
 }
-function nestedTag(o) {
-  return o.includes("[") ?
-    ` <span style="color:var(--choice);font-size:11px;font-weight:700">
-      ⚠ contains further choices — they return as follow-up decisions</span>` : "";
+function nestedTag(o, canFill) {
+  // canFill: single-select options prompt in-page for all-blank nested
+  // groups; multi options (block markup) keep the follow-up-decision path
+  if (!o.includes("[")) return "";
+  const groups = nestedGroups(o);
+  if (canFill && groups.length && groups.every(g => g.isBlank))
+    return ` <span style="color:var(--blank);font-size:11px;font-weight:700">
+      ✎ has fill-in value(s) — you'll be prompted after choosing</span>`;
+  return ` <span style="color:var(--choice);font-size:11px;font-weight:700">
+      ⚠ contains further choices — they return as follow-up decisions</span>`;
+}
+function fillLabel(o, g) {
+  // ~30-char context around a blank group, the blank itself shown as ___
+  const a = Math.max(0, g.start - 15), b = Math.min(o.length, g.end + 15);
+  return (a > 0 ? "…" : "") + o.slice(a, g.start) + "___" +
+    o.slice(g.end, b) + (b < o.length ? "…" : "");
 }
 function freeform(d, e, ph) {
   const custom = e.a && !["keep", "delete"].includes(e.a) &&
@@ -943,11 +1082,11 @@ function gotoNextUnanswered() {
   const start = activeId ? ds.findIndex(d => d.id === activeId) : -1;
   for (let i = 1; i <= ds.length; i++) {
     const d = ds[(start + i + ds.length) % ds.length];
-    if (d.safe && !eff(d).a && !d.duplicate_of && !inRemovedTai(d)) { select(d.id, true); return; }
+    if (d.safe && (!eff(d).a || pendingFills(d)) && !d.duplicate_of && !inRemovedTai(d)) { select(d.id, true); return; }
   }
   for (let i = 1; i <= ds.length; i++) {  // fall back to any unanswered
     const d = ds[(start + i + ds.length) % ds.length];
-    if (d.safe && !eff(d).a && !inRemovedTai(d)) { select(d.id, true); return; }
+    if (d.safe && (!eff(d).a || pendingFills(d)) && !inRemovedTai(d)) { select(d.id, true); return; }
   }
 }
 function gotoPrev() {
@@ -1267,7 +1406,7 @@ function renderProfile() {
 }
 function updateProgress() {
   const uniq = ds.filter(d => !d.duplicate_of && d.safe && !inRemovedTai(d));
-  const done = uniq.filter(d => eff(d).a).length;
+  const done = uniq.filter(d => eff(d).a && !pendingFills(d)).length;
   const profAll = Object.keys(DATA.tailoring_options).length
     + (nPlural ? 1 : 0) + ((DATA.unit_spans || []).length ? 1 : 0);
   const profOpen = Math.max(0, profAll - Object.keys(state.profile).length);
@@ -1301,7 +1440,7 @@ document.getElementById("btnView").onclick = () => {
 };
 document.getElementById("btnExport").onclick = () => {
   const uniq = ds.filter(d => !d.duplicate_of && d.safe && !inRemovedTai(d));
-  const open = uniq.filter(d => !eff(d).a).map(d => d.id);
+  const open = uniq.filter(d => !eff(d).a || pendingFills(d)).map(d => d.id);
   const profAll = Object.keys(DATA.tailoring_options).length
     + (nPlural ? 1 : 0) + ((DATA.unit_spans || []).length ? 1 : 0);
   const profOpen = Math.max(0, profAll - Object.keys(state.profile).length);

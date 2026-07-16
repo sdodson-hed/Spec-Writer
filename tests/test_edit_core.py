@@ -106,6 +106,47 @@ console.log("OK");
 """
 
 
+# Second harness: the nested fill-in blank helpers (decision-page follow-up
+# prompts). Pure string functions, so they live in EDIT_CORE_JS and run
+# under the same Node harness.
+NESTED_HARNESS = r"""
+function eq(a, b, msg) {
+  const ja = JSON.stringify(a), jb = JSON.stringify(b);
+  if (ja !== jb) {
+    console.error("FAIL " + msg + "\n  got      " + ja + "\n  expected " + jb);
+    process.exit(1);
+  }
+}
+
+// ---- nestedGroups ----
+eq(nestedGroups("water at [_____] degrees"),
+   [{start:9, end:16, inner:"_____", isBlank:true}], "single blank group");
+
+eq(nestedGroups("keep [_____] of [a][b] items").map(g => g.isBlank),
+   [true, false, false], "mixed blank and choice groups");
+
+let dg = nestedGroups("x [outer [inner] y] z");
+eq(dg.length, 1, "nested brackets form one top-level group");
+eq(dg[0].inner, "outer [inner] y", "depth-counted inner text");
+eq(dg[0].isBlank, false, "group with nested brackets is not a blank");
+
+eq(nestedGroups("[oops"), [], "unbalanced open bracket yields no group");
+
+eq(nestedGroups("[ __ _ ]")[0].isBlank, true,
+   "spaces and underscores still count as a blank");
+eq(nestedGroups("[__a]")[0].isBlank, false, "letters disqualify a blank");
+
+// ---- composeFill ----
+eq(composeFill("at [_____] to [___] deg", ["5", "9"]),
+   "at 5 to 9 deg", "fills replace blanks in document order");
+eq(composeFill("keep [_____] of [a][b] items", ["3"]),
+   "keep 3 of [a][b] items", "non-blank groups preserved verbatim");
+eq(composeFill("pipe [_____] size", ["5\""]),
+   "pipe 5\" size", "special characters pass through");
+console.log("OK");
+"""
+
+
 def _node():
     return shutil.which("node")
 
@@ -114,6 +155,17 @@ def _node():
 def test_edit_core_under_node(tmp_path):
     js = tmp_path / "core_test.js"
     js.write_text(EDIT_CORE_JS + HARNESS, encoding="utf-8")
+    proc = subprocess.run(
+        [_node(), str(js)], capture_output=True, text=True, timeout=60
+    )
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    assert "OK" in proc.stdout
+
+
+@pytest.mark.skipif(_node() is None, reason="node not on PATH")
+def test_nested_fill_core_under_node(tmp_path):
+    js = tmp_path / "nested_test.js"
+    js.write_text(EDIT_CORE_JS + NESTED_HARNESS, encoding="utf-8")
     proc = subprocess.run(
         [_node(), str(js)], capture_output=True, text=True, timeout=60
     )

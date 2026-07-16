@@ -301,6 +301,74 @@ def test_undo_stacks_cleared_on_revert_and_profile_change(tmp_path):
     assert "editUndo = []" in prof and "editRedo = []" in prof
 
 
+def test_nested_fill_core_functions_in_page(tmp_path):
+    html = _page(tmp_path)
+    assert "function nestedGroups(" in html
+    assert "function composeFill(" in html
+    assert "NESTED_BLANK_RE" in html
+    assert "function pendingFills(" in html
+    assert "function fillMeta(" in html
+
+
+def test_nested_fill_panel_hooks(tmp_path):
+    html = _page(tmp_path)
+    assert "data-fill=" in html
+    assert 'data-act="applyfills"' in html
+    # badge: all-blank nested groups promise an in-page prompt…
+    assert "has fill-in value(s) — you'll be prompted after choosing" in html
+    # …while non-blank nested groups keep the follow-up-decision warning
+    assert "contains further choices" in html
+
+
+def test_pending_fills_gates_progress_nav_export_and_mark(tmp_path):
+    # Victor's choice: an option picked but with unfilled nested blanks stays
+    # yellow/unanswered everywhere — progress, next-unanswered (both loops),
+    # the export gate's open list, and the mark itself.
+    html = _page(tmp_path)
+    prog = html.split("function updateProgress(")[1].split("\nfunction ")[0]
+    assert "pendingFills(" in prog
+    nav = html.split("function gotoNextUnanswered(")[1].split("\nfunction ")[0]
+    assert nav.count("pendingFills(") >= 2
+    gate = html.split('getElementById("btnExport")')[1].split("btnImport")[0]
+    assert "pendingFills(" in gate
+    mark = html.split("function updateMark(")[1].split("\nfunction ")[0]
+    assert "pendingFills(" in mark
+    assert "fill in the blank value" in mark
+
+
+def test_applyfills_force_sets_with_metadata_and_collision_guard(tmp_path):
+    html = _page(tmp_path)
+    handler = html.split('querySelector("[data-act=applyfills]")')[1].split(
+        "wireNav(")[0]
+    # stores the composed literal plus re-edit metadata
+    assert "rec.option" in handler and "rec.fills" in handler
+    # digits-only composed text that collides with an option number is blocked
+    assert "optionIdx(d, composed)" in handler
+    # force-set (multi-handler pattern): setAnswer would toggle off on same value
+    assert "setAnswer(" not in handler
+
+
+def test_answer_paths_clear_fill_metadata(tmp_path):
+    # Any answer stored through setAnswer (option pick, keep/delete, freeform)
+    # or the multi force-set is NOT a composed-fill answer, so stale
+    # option/fills metadata must be dropped before storing.
+    html = _page(tmp_path)
+    sa = html.split("function setAnswer(")[1].split("\nfunction ")[0]
+    assert "delete cur.option" in sa and "delete cur.fills" in sa
+    multi = html.split('".opts button[data-multi]"')[1].split("[data-custom]")[0]
+    assert "delete rec.option" in multi and "delete rec.fills" in multi
+
+
+def test_fillmeta_validates_imported_metadata(tmp_path):
+    # A hand-edited/imported record can carry option/fills that no longer
+    # match this master (option out of range, blank count changed). fillMeta
+    # must reject those — the literal answer still renders correctly.
+    html = _page(tmp_path)
+    fm = html.split("function fillMeta(")[1].split("\nfunction ")[0]
+    assert "return null" in fm
+    assert ".length" in fm  # blank-count must match fills length
+
+
 def test_gap_anchor_render_is_deduped_and_clamped(tmp_path):
     # A nav anchor whose offset falls strictly inside a manual edit's
     # original span [r.start, r.end) must not be silently dropped: gapInner's
