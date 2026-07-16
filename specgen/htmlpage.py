@@ -505,7 +505,7 @@ function setNotes(id, val) {
 
 // ---- document view ----
 function activeSpans() {
-  const spans = ds.map(d => ({ s: d.char_start, e: d.char_end, pri: 3, d }));
+  const spans = ds.filter(d => d.safe).map(d => ({ s: d.char_start, e: d.char_end, pri: 3, d }));
   for (const t of DATA.tailoring_spans || []) {
     const names = t.opt.split(",").map(x => x.trim());
     if (names.every(nm => state.profile[nm] === "remove"))
@@ -817,7 +817,7 @@ function renderPanel() {
     <div style="font-size:12.5px;margin-top:6px">${esc(d.note_guidance)}</div></details>`;
   if (d.hint) h += `<div class="hint">${esc(d.hint)}</div>`;
   if (!d.safe) {
-    h += `<div class="dupnote">This bracket crosses structural markup and can't be answered as a choice; it is flagged in the unresolved report for manual editing in SI Editor after generation.</div>` + navRow();
+    h += `<div class="dupnote">This bracket's options cross structural markup, so it can't be answered as a simple choice. Turn on Edit (top bar) and revise the bracketed text directly in the document — your changes are tracked and applied when you generate.</div>` + navRow();
     p.innerHTML = h; wireNav(p); return;
   }
   const overridden = state.answers[d.id] && state.answers[d.id].answer;
@@ -979,7 +979,7 @@ function pruneStaleEdits() {
 }
 function meConflict(s, e, excludeId) {
   for (const d of ds)
-    if (s < d.char_end && e > d.char_start) return `decision ${d.id}`;
+    if (d.safe && s < d.char_end && e > d.char_start) return `decision ${d.id}`;
   for (const t of DATA.tailoring_spans || []) {
     const names = t.opt.split(",").map(x => x.trim());
     if (names.every(nm => state.profile[nm] === "remove") &&

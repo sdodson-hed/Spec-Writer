@@ -175,14 +175,17 @@ def test_manual_text_edit_hooks_present(tmp_path):
     assert "Revert this change" in html
 
 
-def test_unsafe_card_copy_points_to_si_editor(tmp_path):
+def test_unsafe_decisions_not_islands_and_editable(tmp_path):
     html = _page(tmp_path)
-    assert (
-        "This bracket crosses structural markup and can't be answered as a "
-        "choice; it is flagged in the unresolved report for manual editing "
-        "in SI Editor after generation."
-    ) in html
-    assert "edit it directly instead" not in html
+    # only SAFE decisions become locked <mark> islands; unsafe bracket text
+    # flows into the editable gaps
+    assert "ds.filter(d => d.safe)" in html
+    # meConflict only blocks edits overlapping SAFE decisions
+    body = html.split("function meConflict(")[1].split("\nfunction ")[0]
+    assert "d.safe && s < d.char_end" in body
+    # unsafe-card copy points to inline editing, not SI Editor
+    assert "revise the bracketed text directly in the document" in html
+    assert "SI Editor" not in html
 
 
 def test_decision_card_has_edit_text_button(tmp_path):

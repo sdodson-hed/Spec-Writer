@@ -159,8 +159,11 @@ def _invalid_edit_reason(
         return "selected text no longer matches this master (before mismatch)"
     if end > start and offs[end - 1] - offs[start] != end - 1 - start:
         return "selection crosses structural markup"
+    # Only SAFE groups lock their spans: unsafe groups (options crossing
+    # structural markup) are answered by editing their literal text, and the
+    # contiguity check above already keeps any edit tag-free.
     for g in groups:
-        if start < g.char_end and end > g.char_start:
+        if start < g.char_end and end > g.char_start and g.safe:
             return f"selection overlaps decision {g.gid}"
     return ""
 
