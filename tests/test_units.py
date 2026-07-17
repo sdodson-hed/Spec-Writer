@@ -54,6 +54,6 @@ def test_readers_accept_units(tmp_path):
         '{"profile": {"%s": "si", "ARMY": "remove"}}' % UNITS_KEY,
         encoding="utf-8",
     )
-    profile, _ = read_answers_json(p)
+    profile, _, _ = read_answers_json(p)
     assert profile[UNITS_KEY] == "si"
     assert profile["ARMY"] == "remove"

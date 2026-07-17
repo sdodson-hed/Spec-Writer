@@ -54,7 +54,7 @@ def test_json_office_passthrough(tmp_path):
         '{"answers": {"BRK-0001": {"answer": "keep", "office": "AE"}}}',
         encoding="utf-8",
     )
-    _, answers = read_answers_json(p)
+    _, answers, _ = read_answers_json(p)
     assert answers["BRK-0001"]["office"] == "AE"
 
 

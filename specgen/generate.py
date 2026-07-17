@@ -31,6 +31,7 @@ from .scan import (
     is_additive,
     is_connector,
     is_plural,
+    scan_fingerprint,
     scan_groups,
     strip_connector,
 )
@@ -185,9 +186,28 @@ def generate(
     answers: dict[str, dict],
     out_sec: Path | str,
     revisions: bool = False,
+    fingerprint: str | None = None,
+    force_stale: bool = False,
 ) -> dict:
     master = Path(master)
     src = secfile.parse(master).source
+    # Stale-answers gate (issue #23): the answer file carries the
+    # fingerprint of the scan it was recorded against; if this master's
+    # scan differs, every BRK id may point at a DIFFERENT bracket, so
+    # applying would silently write the wrong spec.
+    expected = scan_fingerprint(scan_groups(src)[0])
+    fp_status = "unstamped"
+    if fingerprint:
+        if fingerprint != expected and not force_stale:
+            raise GenerateError(
+                f"answers were recorded against a different scan of this "
+                f"section (answers fingerprint {fingerprint}, master scan "
+                f"{expected}) — the master or the scanner has changed since "
+                f"the answer file was made. Re-open the decision page / "
+                f"workbook built from THIS master and re-export, or pass "
+                f"--force to apply anyway"
+            )
+        fp_status = "match" if fingerprint == expected else "MISMATCH (forced)"
     if revisions and re.search(r"<(?:DEL|ADD)[\s>/]", src):
         raise GenerateError(
             "master already contains <DEL>/<ADD> revision markup; "
@@ -573,6 +593,7 @@ def generate(
     summary = {
         "master": str(master),
         "output": str(out_sec),
+        "answers_fingerprint": fp_status,
         "decisions_total": len(groups),
         "resolved": len([r for r in redline if r["kind"] != "tailoring"]),
         "unresolved": len(unresolved),

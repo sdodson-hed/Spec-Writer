@@ -14,6 +14,8 @@ Nested brackets stay embedded in their enclosing option.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from dataclasses import dataclass
 
@@ -227,6 +229,21 @@ def scan_groups(src: str) -> tuple[list[Group], str, list[int]]:
         else:
             i = group_char_start + 1
     return groups, text, offs
+
+
+def scan_fingerprint(groups: list[Group]) -> str:
+    """Stable hash of the decision surface: IDs, kinds, option texts, and
+    positions. Any master edit OR scanner-behavior change that shifts what
+    an answer ID means produces a different fingerprint, so `generate` can
+    refuse answer files recorded against a different scan (issue #23)."""
+    payload = [
+        (g.gid, g.kind, [o.text for o in g.options], g.char_start, g.char_end)
+        for g in groups
+    ]
+    digest = hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    )
+    return digest.hexdigest()[:16]
 
 
 def is_connector(text: str) -> bool:

@@ -27,6 +27,7 @@ from .scan import (
     is_additive,
     is_connector,
     is_plural,
+    scan_fingerprint,
     scan_groups,
     text_stream,
 )
@@ -346,6 +347,7 @@ def build_manifest(sec: SecFile) -> dict:
         "date_code": dte.text().strip() if dte is not None else "?",
         "revision": rev.group(1) if rev else None,
         "umrl_date": umrl.group(1) if umrl else None,
+        "fingerprint": scan_fingerprint(groups),
         "counts": {
             "bracket_groups_total": len(decisions),
             "bracket_groups_in_body": len(body_decisions),

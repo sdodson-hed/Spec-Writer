@@ -316,7 +316,7 @@ def test_read_answers_json_me_passthrough_and_malformed_skip(tmp_path):
         ),
         encoding="utf-8",
     )
-    _profile, answers = read_answers_json(p)
+    _profile, answers, _fp = read_answers_json(p)
     assert answers["ME@5"] == {
         "start": 5,
         "end": 10,

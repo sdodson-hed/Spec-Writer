@@ -170,8 +170,22 @@ def cmd_generate(args) -> int:
             return 1
         print("WARNING: proceeding despite unattributed signals (--force)")
 
-    profile, ans = read_answers(args.answers)
-    summary = generate(args.file, profile, ans, args.out, revisions=args.revisions)
+    profile, ans, fingerprint = read_answers(args.answers)
+    if fingerprint is None:
+        print(
+            "WARNING: answers file carries no scan fingerprint (made before "
+            "fingerprinting, or hand-built) — cannot verify it matches this "
+            "master; BRK ids are applied as-is"
+        )
+    summary = generate(
+        args.file,
+        profile,
+        ans,
+        args.out,
+        revisions=args.revisions,
+        fingerprint=fingerprint,
+        force_stale=args.force,
+    )
     print(json.dumps(summary, indent=2))
     return 0
 

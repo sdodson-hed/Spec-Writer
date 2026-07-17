@@ -65,10 +65,10 @@ def main() -> int:
                 None,
             )
             if answers_file is not None:
-                profile, ans = read_answers(answers_file)
+                profile, ans, fingerprint = read_answers(answers_file)
                 summary = generate(
                     mpath, profile, ans, proj / "generated" / f"{name}.sec",
-                    revisions=args.revisions,
+                    revisions=args.revisions, fingerprint=fingerprint,
                 )
                 status = f"{summary['resolved']} resolved"
                 unresolved = f"{summary['unresolved']} unresolved"

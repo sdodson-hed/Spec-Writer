@@ -210,15 +210,29 @@ def write_workbook(manifest: dict, out_path: Path | str) -> None:
     for i, line in enumerate(README.strip().splitlines(), 1):
         rs.cell(row=i, column=1, value=line)
 
+    # --- Meta sheet: ties the workbook to the exact scan it was built from
+    # (generate refuses answers recorded against a different scan) ---
+    ms = wb.create_sheet("Meta")
+    ms.column_dimensions["A"].width = 22
+    ms.column_dimensions["B"].width = 44
+    ms.append(["Section", manifest.get("section", "")])
+    ms.append(["Fingerprint", manifest.get("fingerprint", "")])
+    ms.append(["Do not edit this sheet.", ""])
+
     wb.save(str(out_path))
 
 
-def read_answers_json(path: Path | str) -> tuple[dict[str, str], dict[str, dict]]:
+def read_answers_json(
+    path: Path | str,
+) -> tuple[dict[str, str], dict[str, dict], str | None]:
     """Read an answers JSON (as exported by the HTML decision page or written
-    by the platform). Same return shape as read_workbook."""
+    by the platform). Same return shape as read_workbook: (profile, answers,
+    fingerprint-or-None)."""
     import json
 
     data = json.loads(Path(path).read_text(encoding="utf-8"))
+    fingerprint = data.get("fingerprint")
+    fingerprint = str(fingerprint).strip() if fingerprint else None
     profile = {
         k: str(v).strip().lower()
         for k, v in (data.get("profile") or {}).items()
@@ -253,19 +267,30 @@ def read_answers_json(path: Path | str) -> tuple[dict[str, str], dict[str, dict]
             if office:
                 rec["office"] = office
             answers[key] = rec
-    return profile, answers
+    return profile, answers, fingerprint
 
 
-def read_answers(path: Path | str) -> tuple[dict[str, str], dict[str, dict]]:
+def read_answers(
+    path: Path | str,
+) -> tuple[dict[str, str], dict[str, dict], str | None]:
     """Dispatch on file type: .json or .xlsx."""
     if str(path).lower().endswith(".json"):
         return read_answers_json(path)
     return read_workbook(path)
 
 
-def read_workbook(path: Path | str) -> tuple[dict[str, str], dict[str, dict]]:
-    """Return (profile, answers). answers[id] = {"answer": str, "notes": str}."""
+def read_workbook(
+    path: Path | str,
+) -> tuple[dict[str, str], dict[str, dict], str | None]:
+    """Return (profile, answers, fingerprint-or-None).
+    answers[id] = {"answer": str, "notes": str}."""
     wb = load_workbook(str(path), data_only=True)
+    fingerprint: str | None = None
+    if "Meta" in wb.sheetnames:
+        for row in wb["Meta"].iter_rows(min_row=1, values_only=True):
+            if row and str(row[0]).strip().lower() == "fingerprint":
+                v = str(row[1]).strip() if len(row) > 1 and row[1] else ""
+                fingerprint = v or None
     ws = wb["Answers"]
     head = {str(c.value).strip().lower(): i for i, c in enumerate(ws[1]) if c.value}
     id_i, ans_i = head["id"], head["answer"]
@@ -293,4 +318,4 @@ def read_workbook(path: Path | str) -> tuple[dict[str, str], dict[str, dict]]:
             action = "" if len(row) <= act_i or row[act_i] is None else str(row[act_i]).strip().lower()
             if action in ("keep", "remove", "si", "ip"):
                 profile[str(row[key_i]).strip()] = action
-    return profile, answers
+    return profile, answers, fingerprint

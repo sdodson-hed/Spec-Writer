@@ -1563,7 +1563,8 @@ document.getElementById("btnExport").onclick = () => {
       return;
   }
   const payload = { section: DATA.section, title: DATA.title,
-    revision: DATA.revision, exported: new Date().toISOString(),
+    revision: DATA.revision, fingerprint: DATA.fingerprint,
+    exported: new Date().toISOString(),
     complete: open.length === 0 && profOpen <= 0,
     unanswered: open,
     profile: state.profile,
