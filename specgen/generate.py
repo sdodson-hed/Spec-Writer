@@ -154,7 +154,7 @@ def _escape_manual_edit_text(text: str) -> str:
 
 
 def _invalid_edit_reason(
-    edit: dict, stream: str, offs: list[int], groups: list
+    edit: dict, src: str, stream: str, offs: list[int], groups: list
 ) -> str:
     """Validate a manual text edit (an ``ME@`` answer) against the ORIGINAL
     scan. Returns "" if valid, else a human-readable rejection reason."""
@@ -171,6 +171,17 @@ def _invalid_edit_reason(
         return "selected text no longer matches this master (before mismatch)"
     if end > start and offs[end - 1] - offs[start] != end - 1 - start:
         return "selection crosses structural markup"
+    # Synthetic layout chars (<BRK/> newline, list-indent tab) map to their
+    # originating TAG's offset, not to a text char — splicing over one would
+    # cut into markup bytes. A one-char edit on such a char passes the
+    # contiguity check above, so test each char explicitly: real stream
+    # chars always equal their source char; synthetic ones sit on a '<'.
+    for k in range(start, end):
+        if src[offs[k]] != stream[k]:
+            return (
+                "selection covers a layout character produced by markup "
+                "(line break or list indent), which has no editable text"
+            )
     # Only SAFE groups lock their spans: unsafe groups (options crossing
     # structural markup) are answered by editing their literal text, and the
     # contiguity check above already keeps any edit tag-free.
@@ -243,7 +254,7 @@ def generate(
             return (1, 0, item[0])
 
     for key, edit in sorted(me_edits_in.items(), key=_edit_sort_key):
-        reason = _invalid_edit_reason(edit, stream, offs, groups)
+        reason = _invalid_edit_reason(edit, src, stream, offs, groups)
         if not reason:
             start, end = int(edit["start"]), int(edit["end"])
             for a_start, a_end, a_key in accepted_spans:

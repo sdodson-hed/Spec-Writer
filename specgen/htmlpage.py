@@ -243,6 +243,53 @@ function applyGapOp(text, records, s, e, op, lockedOrig) {
   }
   return { records: recs, caret };
 }
+// ---- view-mode reflow (pure; string-only) ----
+// Whitespace runs are classified ONCE over the full text, then any sub-slice
+// renders consistently — a run split across render-piece boundaries (note
+// spans, nav anchors, edit records) is still one decision, applied exactly
+// once by the piece that contains the run's START.
+function flowRunsFor(text) {
+  const runs = [];
+  const re = /(?:[ \t]*\r?\n)+/g;
+  let m;
+  while ((m = re.exec(text))) {
+    const run = m[0];
+    let rep;
+    // a lone \n (no \r before it) is a <BRK/> structural line break: the
+    // whole run collapses to ONE break (tight lists). Pure-CRLF runs are
+    // fixed-width authoring wrap: one -> space, two-or-more -> blank line.
+    if (/(?:^|[^\r])\n/.test(run)) rep = "\n";
+    else rep = (run.match(/\r\n/g) || []).length >= 2 ? "\n\n" : " ";
+    runs.push({ s: m.index, e: m.index + run.length, rep });
+  }
+  return runs;
+}
+function flowSliceIn(text, runs, a, b) {
+  let lo = 0, hi = runs.length;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (runs[mid].e <= a) lo = mid + 1; else hi = mid; }
+  let out = "", pos = a;
+  for (let i = lo; i < runs.length && runs[i].s < b; i++) {
+    const r = runs[i];
+    if (r.s > pos) out += text.slice(pos, r.s);
+    if (r.s >= a) out += r.rep;  // the piece holding the run START owns it
+    pos = Math.min(r.e, b);
+  }
+  if (pos < b) out += text.slice(pos, b);
+  return out;
+}
+function syntheticIn(text, a, b) {
+  // layout chars synthesized from markup by text_stream (<BRK/> newline,
+  // list-indent / reference-column tab). Master text itself contains no
+  // lone \n and no \t (verified corpus-wide), so these are unambiguous.
+  // Returned as [start,end) ranges for op blocking: editing them would
+  // splice into tag bytes at generate time.
+  const out = [];
+  for (let i = a; i < b; i++) {
+    const c = text[i];
+    if (c === "\t" || (c === "\n" && text[i - 1] !== "\r")) out.push([i, i + 1]);
+  }
+  return out;
+}
 // ---- nested fill-in blanks (pure; string-only) ----
 // A choice option's tag-free text can carry nested [...] groups. Groups
 // whose inner text is only whitespace/underscores (with at least one
@@ -511,30 +558,37 @@ const ds = DATA.decisions.filter(d => !d.in_note && !d.plural);
 const byId = Object.fromEntries(ds.map(d => [d.id, d]));
 const nPlural = DATA.decisions.filter(d => d.plural).length;
 const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-// View-mode paragraph reflow (issue #43). UFGS masters hard-wrap body text
-// at a fixed column with CRLFs; under white-space:pre-wrap those break
-// sentences mid-paragraph. A single source CRLF is fixed-width wrapping and
-// collapses to a space; a run of two or more CRLFs is a real paragraph break
-// and is kept; a lone newline is a BRK line break (no carriage return) and is
-// never matched, so it survives. Edit mode returns text verbatim because the
-// caret/offset math indexes the exact stream, so reflow must not run there.
-function reflow(s) {
-  if (editMode) return s;
-  // Consume horizontal space BEFORE each newline but not after the last one,
-  // so a leading indent tab on the next line (e.g. a list-item <ITM> tab)
-  // survives the collapse instead of being swallowed.
-  return s.replace(/(?:[ \t]*\r?\n)+/g, function (run) {
-    // A run holding a <BRK/> break (a lone \n, no \r) is a structural line
-    // break — collapse the whole run (BRKs + file-wrap CRLFs) to ONE break,
-    // so list items stay tight instead of double/triple spaced. A pure-CRLF
-    // run is fixed-width authoring wrap: one CRLF -> space, two-or-more -> a
-    // blank line (a real body paragraph break).
-    if (/(?:^|[^\r])\n/.test(run)) return "\n";
-    var n = (run.match(/\r\n/g) || []).length;
-    return n >= 2 ? "\n\n" : " ";
-  });
+// View-mode paragraph reflow (issue #43) — thin position-based wrappers over
+// the pure core (flowRunsFor / flowSliceIn / syntheticIn in the edit core).
+// Edit mode renders text verbatim: the caret/offset math indexes the exact
+// stream, so reflow never runs there.
+let flowRuns = null;
+function flowSlice(a, b) {
+  if (editMode) return DATA.text.slice(a, b);
+  if (!flowRuns) flowRuns = flowRunsFor(DATA.text);
+  return flowSliceIn(DATA.text, flowRuns, a, b);
 }
-const escFlow = s => esc(reflow(s));
+const syntheticMemo = new Map();
+function syntheticRangesIn(s, e) {
+  const key = s + ":" + e;
+  let v = syntheticMemo.get(key);
+  if (!v) { v = syntheticIn(DATA.text, s, e); syntheticMemo.set(key, v); }
+  return v;
+}
+// Leaf-decision [ ... ] hug: UFGS wraps a whole submittal item AND its
+// trailing blank-line spacing in one optional bracket, which floats the ]
+// onto a later line. Split the span so whitespace just inside the brackets
+// renders OUTSIDE the highlight (the decision span itself is unchanged, so
+// keep/delete still removes item + spacing together). Shared by the initial
+// build (emit) and every later mark refresh (updateMark), so the layout
+// survives interaction.
+function markParts(s, e) {
+  const mm = /^(\[)(\s*)([\s\S]*?)(\s*)(\])$/.exec(DATA.text.slice(s, e));
+  if (!mm) return null;
+  const a = s + 1, b = a + mm[2].length, c = b + mm[3].length, d = c + mm[4].length;
+  return { pre: flowSlice(a, b), core: "[" + flowSlice(b, c) + "]",
+           post: flowSlice(c, d) };
+}
 __EDIT_CORE__
 let dirty = false;
 const save = () => { dirty = true; localStorage.setItem(KEY, JSON.stringify(state)); };
@@ -726,11 +780,11 @@ function noteWrap(a, b) {
     if (ne <= pos) continue;
     if (ns >= b) break;
     const s = Math.max(ns, pos), e2 = Math.min(ne, b);
-    html += escFlow(DATA.text.slice(pos, s)) +
-      `<b class="ntetxt">` + escFlow(DATA.text.slice(s, e2)) + `</b>`;
+    html += esc(flowSlice(pos, s)) +
+      `<b class="ntetxt">` + esc(flowSlice(s, e2)) + `</b>`;
     pos = e2;
   }
-  return html + escFlow(DATA.text.slice(pos, b));
+  return html + esc(flowSlice(pos, b));
 }
 function origHtml(gapStart, a, b, emitted, rec, locked) {
   // original text slice [a,b) with nav anchors and locked-span tints.
@@ -764,7 +818,7 @@ function origHtml(gapStart, a, b, emitted, rec, locked) {
         ? `<span class="paranum">${esc(n.num)}</span>` : "";
       html += `<span class="navanchor" contenteditable="false" id="nav-${m.anchor}">${num}</span>`;
     } else {
-      html += `<span class="lockedtxt" contenteditable="false">${escFlow(DATA.text.slice(m.at, m.lockEnd))}</span>`;
+      html += `<span class="lockedtxt" contenteditable="false">${esc(flowSlice(m.at, m.lockEnd))}</span>`;
       pos = m.lockEnd;
     }
   }
@@ -823,15 +877,15 @@ function buildDoc() {
     // outside the mark (still inside the decision span, so keep/delete is
     // unchanged) so the highlight and the ] hug the item.
     if (sp.d && kids.length === 0) {
-      const mm = /^(\[)(\s*)([\s\S]*?)(\s*)(\])$/.exec(DATA.text.slice(sp.s, sp.e));
-      if (mm)
-        return escFlow(mm[2]) +
-          `<mark data-id="${sp.d.id}" id="mk-${sp.d.id}">${mm[1]}${escFlow(mm[3])}${mm[5]}</mark>` +
-          escFlow(mm[4]);
+      const mp = markParts(sp.s, sp.e);
+      if (mp)
+        return esc(mp.pre) +
+          `<mark data-id="${sp.d.id}" id="mk-${sp.d.id}">${esc(mp.core)}</mark>` +
+          esc(mp.post);
     }
     let inner = "", p = sp.s;
-    for (const k of kids) { inner += escFlow(DATA.text.slice(p, k.s)); inner += emit(k); p = k.e; }
-    inner += escFlow(DATA.text.slice(p, sp.e));
+    for (const k of kids) { inner += esc(flowSlice(p, k.s)); inner += emit(k); p = k.e; }
+    inner += esc(flowSlice(p, sp.e));
     if (sp.d) return `<mark data-id="${sp.d.id}" id="mk-${sp.d.id}">${inner}</mark>`;
     if (sp.tai) {
       const n = sp.e - sp.s;
@@ -919,7 +973,11 @@ function updateMark(d) {
   if (d.id === activeId) cls.push("active");
   if (!e.a) {
     cls.push("todo");
-    m.textContent = DATA.text.slice(d.char_start, d.char_end);
+    // reproduce the build-time rendering (trimmed brackets + reflow): a raw
+    // slice here would resurrect the CRLF jank — and DUPLICATE the
+    // whitespace emit() moved outside the mark — on the first interaction
+    const mp = markParts(d.char_start, d.char_end);
+    m.textContent = mp ? mp.core : flowSlice(d.char_start, d.char_end);
     m.title = "click to answer";
   } else if (pendingFills(d)) {
     // option picked but nested blanks unfilled: render the picked text so
@@ -940,7 +998,8 @@ function updateMark(d) {
   m.className = cls.join(" ");
 }
 function renderRedline(m, d, txt) {
-  const orig = DATA.text.slice(d.char_start, d.char_end);
+  const mp = markParts(d.char_start, d.char_end);
+  const orig = mp ? mp.core : flowSlice(d.char_start, d.char_end);
   if (state.view !== "redline") {
     if (txt === null) { m.classList.add("deleted"); m.textContent = "deleted"; }
     else { m.textContent = txt; }
@@ -1427,7 +1486,7 @@ function replaceEditsIn(s, e, recs) {
 function applyDocOp(ctx, op) {
   const before = editsIn(ctx.s, ctx.e);
   const res = applyGapOp(DATA.text, state.edits, ctx.s, ctx.e, op,
-    lockedOrigIn(ctx.s, ctx.e));
+    lockedOrigIn(ctx.s, ctx.e).concat(syntheticRangesIn(ctx.s, ctx.e)));
   if (!res) return;
   if (res.blocked) {
     showHint("That text is locked — brackets are answered from the panel.");

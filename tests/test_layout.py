@@ -7,8 +7,13 @@ for <BRK/> and a "\\t" between an </RID> and an immediately-following <RTL>.
 CRLF to a space in view mode (kept literal in edit mode).
 """
 
+import shutil
+import subprocess
+
+import pytest
+
 from specgen import secfile
-from specgen.htmlpage import write_html
+from specgen.htmlpage import EDIT_CORE_JS, write_html
 from specgen.manifest import build_manifest
 from specgen.scan import scan_groups, text_stream
 
@@ -73,6 +78,70 @@ def test_page_carries_mark_trim(tmp_path):
     assert "/^(\\[)(\\s*)([\\s\\S]*?)(\\s*)(\\])$/" in html
 
 
+FLOW_HARNESS = r"""
+function eq(a, b, msg) {
+  const ja = JSON.stringify(a), jb = JSON.stringify(b);
+  if (ja !== jb) {
+    console.error("FAIL " + msg + "\n  got      " + ja + "\n  expected " + jb);
+    process.exit(1);
+  }
+}
+const T = "A.\r\n\r\nB";                    // paragraph break, run = [2,6)
+const R = flowRunsFor(T);
+eq(flowSliceIn(T, R, 0, T.length), "A.\n\nB", "full paragraph break");
+// a run split across two render pieces is applied exactly once, by the
+// piece containing the run START — concatenation must equal the full render
+eq(flowSliceIn(T, R, 0, 4) + flowSliceIn(T, R, 4, T.length), "A.\n\nB",
+   "boundary-split run stays one paragraph break");
+const T2 = "forms,\r\nsizes";
+eq(flowSliceIn(T2, flowRunsFor(T2), 0, T2.length), "forms, sizes",
+   "single CRLF reflows to space");
+const T3 = "list\n\r\nnext";                // BRK newline + file CRLF
+eq(flowSliceIn(T3, flowRunsFor(T3), 0, T3.length), "list\nnext",
+   "BRK-bearing run collapses to one break");
+eq(syntheticIn("a\tb\r\nc\nd", 0, 8), [[1,2],[6,7]],
+   "tab and lone-newline are synthetic; CRLF newline is not");
+console.log("flow tests passed");
+"""
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+def test_flow_core_boundary_coherence():
+    r = subprocess.run(
+        ["node", "-e", EDIT_CORE_JS + FLOW_HARNESS],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 0, r.stderr or r.stdout
+
+
+def test_manual_edit_on_synthetic_char_rejected(tmp_path):
+    # deleting a <BRK/>-synthesized newline passes the contiguity check
+    # (single char) but would splice into the tag's '<' — generate must
+    # reject it as unresolved, not crash at output verification
+    src = "<SEC><TXT>alpha</TXT><BRK/><TXT>beta</TXT></SEC>"
+    from specgen.generate import generate
+    from specgen.scan import text_stream
+
+    text, _, _ = text_stream(src)
+    k = text.index("\n")
+    master = tmp_path / "m.SEC"
+    master.write_bytes(src.encode(secfile.ENCODING))
+    out = tmp_path / "out.sec"
+    summary = generate(
+        master,
+        {},
+        {f"ME@{k}": {"start": k, "end": k + 1, "before": "\n", "after": ""}},
+        out,
+    )
+    assert summary["unresolved"] == 1
+    unresolved = out.with_suffix(".unresolved.md").read_text(encoding="utf-8")
+    assert "layout character" in unresolved
+    # the master text is untouched
+    got = out.read_bytes().decode(secfile.ENCODING)
+    assert "<BRK/>" in got and "alpha" in got and "beta" in got
+
+
 def test_inline_rid_gets_no_tab():
     # <RID> used inline in body (space follows in source) must not get a tab
     text, _, _ = text_stream("<SEC><TXT>per <RID>ACI 301</RID> Section 4.</TXT></SEC>")
@@ -107,7 +176,27 @@ def test_page_reflows_in_view_keeps_literal_in_edit(tmp_path):
     out = tmp_path / "r.html"
     write_html(build_manifest(secfile.parse(p)), out)
     html = out.read_text(encoding="utf-8")
-    assert "function reflow(s)" in html
-    assert "if (editMode) return s;" in html      # edit mode = verbatim
-    assert "escFlow" in html                        # emission routed through it
+    assert "function flowRunsFor(text)" in html    # global run classification
+    assert "function flowSlice(a, b)" in html
+    assert "if (editMode) return DATA.text.slice(a, b);" in html  # edit verbatim
     assert "tab-size: 4" in html                    # RID/RTL columns
+
+
+def test_update_paths_share_build_rendering(tmp_path):
+    # updateMark/renderRedline must reproduce emit()'s trimmed+reflowed mark
+    # content — a raw DATA.text slice there resurrects the CRLF jank (and
+    # duplicates the whitespace emit() moved outside the mark) on the first
+    # click, because refresh() re-renders every mark
+    p = tmp_path / "r.SEC"
+    p.write_bytes(REF.encode(secfile.ENCODING))
+    out = tmp_path / "r.html"
+    write_html(build_manifest(secfile.parse(p)), out)
+    html = out.read_text(encoding="utf-8")
+    assert "function markParts(s, e)" in html
+    body = html.split("function updateMark")[1].split("\nfunction ")[0]
+    assert "markParts(d.char_start, d.char_end)" in body
+    assert "DATA.text.slice(d.char_start, d.char_end)" not in body
+    rr = html.split("function renderRedline")[1].split("\nfunction ")[0]
+    assert "markParts(" in rr
+    # edit ops are blocked over synthetic layout chars
+    assert "syntheticRangesIn(ctx.s, ctx.e)" in html
