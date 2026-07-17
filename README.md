@@ -7,13 +7,20 @@ tailoring option, submittal, and reference a section demands of a specifier.
 
 ## Status
 
-- Lossless parser: **all 55 Division 23 masters round-trip byte-identically**
-  (Nov 2025 UFGS revision, UMRL April 2026).
+- Lossless parser: **all 56 masters round-trip byte-identically**
+  (55 Division 23 + 26 20 00, Nov 2025 UFGS revision, UMRL April 2026).
+  26 20 00 joined the corpus after a partner-engineer review of its decision
+  page (2026-07-16) surfaced scanner-semantics gaps — see issues #33–#41.
+- Additive bracket lists: choice groups that are select-any lists
+  ("[ single pole][, double pole][, and four-way]") render as checkboxes;
+  connector-only spans ("[ or ]") are joiners, never options; kept items
+  are rejoined with correct commas/and/or by `generate`. Mid-sentence
+  choice groups demote "remove entirely" behind a confirmation.
 - Decision manifests generated for the Maxwell pilot sections:
   - `23 64 10` Water Chillers, Vapor Compression Type (147 bracket groups)
   - `23 64 26` Chilled/Chilled-Hot/Condenser Water Piping Systems
 - Completeness audit enforced corpus-wide: unknown bracket tokens and nested
-  structure violations caught in CI (all 55 masters audit-clean).
+  structure violations caught in CI (all 56 masters audit-clean).
 - Markup signals surfaced: units (SI/IP), submittal-review groups, and
   markup-split conflicts all detectable and traceable in manifests and reports.
 - XSD validation wired up but the official schema
@@ -34,7 +41,7 @@ python -m specgen generate  "masters/23 64 10.SEC" \
     --answers out/answers.xlsx -o out/generated/23_64_10.sec   # or .json
 python -m specgen audit     "masters/23 64 10.SEC"               # completeness gate
 python -m specgen generate  ... --revisions   # also emit .revisions.sec (SI tracked changes)
-python scripts/audit_corpus.py                # audit + round-trip all 55 masters
+python scripts/audit_corpus.py                # audit + round-trip all 56 masters
 python scripts/build_project.py <dir> <masters...>   # per-project batch + index
 ```
 

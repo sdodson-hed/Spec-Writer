@@ -21,6 +21,15 @@ from .secfile import _parse_tag
 
 _BLANK_RE = re.compile(r"^[\s_]*_[\s_]*$")
 _WS_RE = re.compile(r"\s+")
+# A span that is ONLY a list connector ("[ or ]", "[, and]", "[,]"): never a
+# selectable option — it joins its neighbors when both are kept.
+_CONNECTOR_ONLY_RE = re.compile(r"^\s*(?:[,;]\s*)?(?:(?:and|or)\b\s*)?$", re.I)
+# Leading/trailing connectors on an option body (", double pole", "brass,",
+# " and control center"): stripped before additive joining, separators are
+# recomputed. Trailing strip prevents double commas from "[brass,][ steel,]".
+_LEAD_CONNECTOR_RE = re.compile(r"(?:[,;]\s*)?(?:(?:and|or)\b\s*)?", re.I)
+_TRAIL_CONNECTOR_RE = re.compile(r"(?:\s*[,;]|\s+(?:and|or)\b)+\s*$", re.I)
+_CONNECTOR_WORD_RE = re.compile(r"\b(and|or)\b", re.I)
 # Tags that are invisible in the rendered section: a gap made only of these
 # (and spaces/tabs) leaves two bracket spans visually adjacent — one choice.
 _INVISIBLE_GAP_RE = re.compile(
@@ -196,6 +205,87 @@ def scan_groups(src: str) -> tuple[list[Group], str, list[int]]:
         else:
             i = group_char_start + 1
     return groups, text, offs
+
+
+def is_connector(text: str) -> bool:
+    """True for a span that is nothing but a list connector (or/and/comma)."""
+    return bool(text.strip()) and _CONNECTOR_ONLY_RE.match(text) is not None
+
+
+def is_additive(group: Group) -> bool:
+    """True when a choice group is an additive list ("select all that
+    apply"), not an exclusive either/or. Signals: a connector-only span
+    anywhere, or an option after the first carrying a leading connector
+    (", double pole", " and control center")."""
+    if group.kind != "choice":
+        return False
+    texts = [o.text for o in group.options]
+    if any(is_connector(t) for t in texts):
+        return True
+    for t in texts[1:]:
+        lead = _LEAD_CONNECTOR_RE.match(t.lstrip()).group(0)
+        if lead.strip():
+            return True
+    return False
+
+
+def connector_word(group: Group) -> str:
+    """The list-joining word ("and"/"or") for an additive group — the last
+    and/or that appears in a connector-only span or an option's leading
+    connector. Defaults to "and" (comma-only lists)."""
+    word = "and"
+    for o in group.options:
+        t = o.text
+        if is_connector(t):
+            m = _CONNECTOR_WORD_RE.search(t)
+            if m:
+                word = m.group(1).lower()
+            continue
+        lead = _LEAD_CONNECTOR_RE.match(t.lstrip()).group(0)
+        m = _CONNECTOR_WORD_RE.search(lead)
+        if m:
+            word = m.group(1).lower()
+    return word
+
+
+def strip_connector(text: str) -> str:
+    """Option body with leading AND trailing connectors removed — the "core"
+    that additive joining recomposes with fresh separators (trailing strip
+    prevents "[brass,][ steel,]" from rejoining with double commas). Bodies
+    that open with markup ('<') keep their start intact (nothing literal to
+    strip)."""
+    t = text.lstrip()
+    lead = _LEAD_CONNECTOR_RE.match(t).group(0)
+    if lead.strip():
+        t = t[len(lead):]
+    t = _TRAIL_CONNECTOR_RE.sub("", t)
+    return t.strip()
+
+
+def connector_runs(group: Group) -> tuple[int, int]:
+    """(lo, hi): options[:lo] and options[hi:] are connector-only spans at
+    the group's EDGES. Edge connectors join the group to surrounding text
+    ("pumps[ and][ motors]"), so they are kept verbatim whenever any core
+    is kept; interior connectors are recomposed by additive_join."""
+    flags = [is_connector(o.text) for o in group.options]
+    lo, hi = 0, len(flags)
+    while lo < hi and flags[lo]:
+        lo += 1
+    while hi > lo and flags[hi - 1]:
+        hi -= 1
+    return lo, hi
+
+
+def additive_join(cores: list[str], conn: str) -> str:
+    """Join kept option cores as an English list: "a", "a and b",
+    "a, b, and c" (the connector word comes from the master's own text)."""
+    if not cores:
+        return ""
+    if len(cores) == 1:
+        return cores[0]
+    if len(cores) == 2:
+        return f"{cores[0]} {conn} {cores[1]}"
+    return ", ".join(cores[:-1]) + f", {conn} " + cores[-1]
 
 
 def is_plural(group: Group) -> bool:

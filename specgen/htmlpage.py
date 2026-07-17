@@ -406,6 +406,10 @@ button.primary { background: var(--accent); color: var(--accent-ink); border-col
 .opts button { text-align: left; line-height: 1.4; }
 .opts button.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .opts button.danger.on { background: #b91c1c; border-color: #b91c1c; color: #fff; }
+.removelink { font-size: 12px; color: var(--muted); padding: 2px 2px 0; }
+.removelink a { color: var(--muted); cursor: pointer; text-decoration: underline dotted; }
+.removelink a:hover { color: #b91c1c; }
+.removelink a.on { color: #b91c1c; font-weight: 700; }
 .freeform { display: flex; gap: 6px; margin-top: 8px; }
 .freeform input { flex: 1; min-width: 0; font: inherit; font-size: 13.5px; padding: 6px 10px;
   border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); }
@@ -516,6 +520,35 @@ function optionIdx(d, a) {
   const idx = a.split(",").map(n => +n - 1);
   return idx.every(i => i >= 0 && i < d.options.length) ? idx : null;
 }
+// Additive-list helpers (mirror scan.py): connector-only spans join their
+// neighbors; kept cores are recomposed as "a", "a and b", "a, b, and c".
+const LEAD_CONNECTOR_RE = /^(?:[,;]\s*)?(?:(?:and|or)\b\s*)?/i;
+const TRAIL_CONNECTOR_RE = /(?:\s*[,;]|\s+(?:and|or)\b)+\s*$/i;
+function isConnectorOpt(d, i) { return (d.conn_opts || []).includes(i); }
+function additiveCore(t) {
+  t = t.replace(/^\s+/, "");
+  const lead = (t.match(LEAD_CONNECTOR_RE) || [""])[0];
+  if (lead.trim()) t = t.slice(lead.length);
+  return t.replace(TRAIL_CONNECTOR_RE, "").trim();
+}
+function additiveJoin(d, idx) {
+  // mirror of generate.py: edge connector spans join the group to the
+  // surrounding sentence and are kept; interior ones are recomposed
+  const n = d.options.length;
+  let lo = 0; while (lo < n && isConnectorOpt(d, lo)) lo++;
+  let hi = n; while (hi > lo && isConnectorOpt(d, hi - 1)) hi--;
+  const cores = idx.filter(i => i >= lo && i < hi && !isConnectorOpt(d, i))
+    .map(i => additiveCore(d.options[i]));
+  const conn = d.connector || "and";
+  if (!cores.length) return "";
+  let joined;
+  if (cores.length === 1) joined = cores[0];
+  else if (cores.length === 2) joined = cores[0] + " " + conn + " " + cores[1];
+  else joined = cores.slice(0, -1).join(", ") + ", " + conn + " " + cores[cores.length - 1];
+  const prefix = d.options.slice(0, lo).join(" ");
+  const suffix = d.options.slice(hi).join(" ");
+  return (prefix ? prefix + " " : "") + joined + (suffix ? " " + suffix : "");
+}
 function resolvedText(d, a) {
   if (a === "delete") return null;
   if (d.kind === "submittal-review" && a === "keep") {
@@ -524,7 +557,10 @@ function resolvedText(d, a) {
   }
   if (a === "keep") return d.options[0];
   const idx = optionIdx(d, a);
-  if (idx) return idx.map(i => d.options[i]).join(d.multi ? "\n" : " ");
+  if (idx) {
+    if (d.additive) return additiveJoin(d, idx);
+    return idx.map(i => d.options[i]).join(d.multi ? "\n" : " ");
+  }
   return a;  // out-of-range digits (or non-numeric) = literal custom text
 }
 // True iff a single-select choice's effective answer is a picked option
@@ -532,7 +568,7 @@ function resolvedText(d, a) {
 // not applied yet, so the decision stays open (progress, next-unanswered,
 // export gate) and the mark stays yellow.
 function pendingFills(d) {
-  if (!(d.kind === "choice" && !d.multi)) return false;
+  if (!(d.kind === "choice" && !d.multi && !d.additive)) return false;
   const idx = optionIdx(d, eff(d).a);
   if (!idx || idx.length !== 1) return false;
   return nestedGroups(d.options[idx[0]]).some(g => g.isBlank);
@@ -543,7 +579,7 @@ function pendingFills(d) {
 // master update) return null — the literal answer still renders correctly,
 // it just re-edits as plain custom text.
 function fillMeta(d, entry) {
-  if (!(d.kind === "choice" && !d.multi)) return null;
+  if (!(d.kind === "choice" && !d.multi && !d.additive)) return null;
   if (!entry || !Number.isInteger(entry.option) || !Array.isArray(entry.fills))
     return null;
   const o = d.options[entry.option - 1];
@@ -918,15 +954,19 @@ function renderPanel() {
       placeholder="reviewer office (e.g. AE) — optional"
       value="${esc(own.office || "")}"><button data-act="setoffice">Set</button></div>`;
     h += freeform(d, e, "…or type replacement text");
-  } else if (d.kind === "choice" && d.multi) {
+  } else if (d.kind === "choice" && (d.multi || d.additive)) {
     const eIdx = optionIdx(d, e.a);
     const picked = new Set(eIdx ? eIdx.map(i => String(i + 1)) : []);
-    h += `<div class="hint">Select all that apply — these are independent items,
-      keep any combination.</div>`;
+    h += d.additive
+      ? `<div class="hint">Select all that apply — kept items are joined
+        with commas and “${esc(d.connector || "and")}” automatically.</div>`
+      : `<div class="hint">Select all that apply — these are independent items,
+        keep any combination.</div>`;
     h += `<div class="opts">` + d.options.map((o, i) =>
+      isConnectorOpt(d, i) ? "" :
       `<button data-multi="${i + 1}" class="${picked.has(String(i + 1)) ? "on" : ""}">` +
-      `${picked.has(String(i + 1)) ? "☑" : "☐"} ${esc(o)}${nestedTag(o, false)}</button>`).join("") +
-      `<button data-val="delete" class="danger ${e.a === "delete" ? "on" : ""}">none of these — remove all</button></div>`;
+      `${picked.has(String(i + 1)) ? "☑" : "☐"} ${esc(d.additive ? additiveCore(o) : o)}${nestedTag(o, false)}</button>`).join("") +
+      removeBtn(d, e, "none of these — remove all") + `</div>`;
     h += freeform(d, e, "…or type replacement text");
   } else if (d.kind === "choice") {
     const meta = fillMeta(d, own);
@@ -934,7 +974,7 @@ function renderPanel() {
     h += `<div class="opts">` + d.options.map((o, i) =>
       `<button data-val="${i + 1}" class="${e.a == String(i + 1) || (meta && meta.option === i + 1) ? "on" : ""}">` +
       `${i + 1}) ${esc(o)}${nestedTag(o, true)}</button>`).join("") +
-      `<button data-val="delete" class="danger ${e.a === "delete" ? "on" : ""}">remove entirely</button></div>`;
+      removeBtn(d, e, "remove entirely") + `</div>`;
     // follow-up prompt: option picked but blanks unfilled (pending), or a
     // composed answer being re-edited (metadata validated by fillMeta)
     const pendIdx = optionIdx(d, e.a);
@@ -968,8 +1008,15 @@ function renderPanel() {
   h += `<div class="navrow"><button data-act="edittext">Edit text… (start from the original)</button></div>`;
   h += navRow();
   p.innerHTML = h;
-  p.querySelectorAll(".opts button[data-val]").forEach(b =>
-    b.onclick = () => setAnswer(d.id, b.dataset.val));
+  p.querySelectorAll(".opts [data-val]").forEach(b =>
+    b.onclick = () => {
+      if (d.kind === "choice" && d.inline && b.dataset.val === "delete" &&
+          eff(d).a !== "delete" &&
+          !confirm("Remove this bracketed text entirely? It sits " +
+            "mid-sentence, so removal may leave an incomplete sentence."))
+        return;
+      setAnswer(d.id, b.dataset.val);
+    });
   p.querySelectorAll(".opts button[data-multi]").forEach(b =>
     b.onclick = () => {
       const cur = eff(d).a;
@@ -1044,6 +1091,14 @@ function renderPanel() {
     if (firstEmpty) firstEmpty.focus();
   }
   wireNav(p);
+}
+function removeBtn(d, e, label) {
+  // Inline groups sit mid-sentence: removing them usually leaves a
+  // fragment, so the remove action is demoted to a confirm-gated link.
+  if (!d.inline)
+    return `<button data-val="delete" class="danger ${e.a === "delete" ? "on" : ""}">${label}</button>`;
+  return `<div class="removelink"><a data-val="delete" class="${e.a === "delete" ? "on" : ""}">${label}…</a>
+    <span>(mid-sentence — rarely correct)</span></div>`;
 }
 function nestedTag(o, canFill) {
   // canFill: single-select options prompt in-page for all-blank nested

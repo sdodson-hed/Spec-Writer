@@ -20,7 +20,15 @@ import bisect
 import re
 from dataclasses import dataclass
 
-from .scan import context_excerpt, duplicate_map, is_plural, scan_groups
+from .scan import (
+    connector_word,
+    context_excerpt,
+    duplicate_map,
+    is_additive,
+    is_connector,
+    is_plural,
+    scan_groups,
+)
 from .secfile import Element, SecFile
 
 _SD_GROUP_RE = re.compile(r"^SD-\d+")
@@ -153,6 +161,19 @@ def build_manifest(sec: SecFile) -> dict:
             any(t in sec.source[o.src_start : o.src_end] for t in _BLOCK_TAGS)
             for o in g.options
         )
+        additive = not multi and is_additive(g)
+        # inline = the group sits mid-sentence (text on the same line right
+        # before or after it): removing it entirely would leave a fragment,
+        # so the UI demotes "remove entirely" behind a confirmation
+        i = g.char_start - 1
+        while i >= 0 and stream[i] in " \t":
+            i -= 1
+        j = g.char_end
+        while j < len(stream) and stream[j] in " \t":
+            j += 1
+        inline = (i >= 0 and stream[i] not in "\r\n") or (
+            j < len(stream) and stream[j] not in "\r\n"
+        )
         decisions.append(
             {
                 "id": g.gid,
@@ -162,6 +183,14 @@ def build_manifest(sec: SecFile) -> dict:
                 "in_note": in_note,
                 "safe": g.safe,
                 "multi": multi,
+                "additive": additive,
+                "connector": connector_word(g) if additive else "",
+                "conn_opts": (
+                    [i for i, o in enumerate(g.options) if is_connector(o.text)]
+                    if additive
+                    else []
+                ),
+                "inline": inline,
                 "plural": is_plural(g),
                 "duplicate_of": dups.get(g.gid),
                 "hint": _hint(g.kind, context),

@@ -22,7 +22,18 @@ from pathlib import Path
 
 from . import secfile
 from .answers import PLURAL_KEY, UNITS_KEY
-from .scan import context_excerpt, duplicate_map, is_plural, scan_groups
+from .scan import (
+    additive_join,
+    connector_runs,
+    connector_word,
+    context_excerpt,
+    duplicate_map,
+    is_additive,
+    is_connector,
+    is_plural,
+    scan_groups,
+    strip_connector,
+)
 
 _WS_RE = re.compile(r"\s+")
 
@@ -343,11 +354,43 @@ def generate(
         else:
             picked = _match_option(g.options, ans) if g.kind == "choice" else None
             if picked is not None:
-                after = "".join(
-                    src[g.options[i].src_start : g.options[i].src_end] for i in picked
-                )
-                action = f"chose option {[i + 1 for i in picked]}"
-                picked_for_rev = picked
+                if is_additive(g):
+                    # Additive list: recompose kept cores with fresh
+                    # separators ("a", "a and b", "a, b, and c"). Interior
+                    # connector-only spans are joiners, never kept on their
+                    # own; connector spans at the group's EDGES join it to
+                    # the surrounding sentence and are kept verbatim.
+                    lo, hi = connector_runs(g)
+
+                    def _body(i: int) -> str:
+                        return src[g.options[i].src_start : g.options[i].src_end]
+
+                    cores = [
+                        strip_connector(_body(i))
+                        for i in picked
+                        if lo <= i < hi and not is_connector(g.options[i].text)
+                    ]
+                    joined = additive_join(cores, connector_word(g))
+                    if cores:
+                        prefix = "".join(_body(i) for i in range(lo))
+                        suffix = "".join(_body(i) for i in range(hi, len(g.options)))
+                        first = _body(lo)
+                        lead = first[: len(first) - len(first.lstrip())]
+                        if prefix and not lead and not prefix[-1].isspace():
+                            lead = " "
+                        after = prefix + lead + joined + suffix
+                    else:
+                        after = ""
+                    action = f"kept items {[i + 1 for i in picked]}"
+                    # revisions fall back to DEL/ADD: the joined text is not a
+                    # plain concatenation of the kept bodies
+                else:
+                    after = "".join(
+                        src[g.options[i].src_start : g.options[i].src_end]
+                        for i in picked
+                    )
+                    action = f"chose option {[i + 1 for i in picked]}"
+                    picked_for_rev = picked
             else:
                 after = ans  # custom / fill-in text (plain text, no markup)
                 action = "filled custom value" if g.kind == "blank" else "custom text"

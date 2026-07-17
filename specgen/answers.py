@@ -127,7 +127,7 @@ def write_workbook(manifest: dict, out_path: Path | str) -> None:
             opts_display = "  |  ".join(
                 f"{i}) {_short(o, 55)}" for i, o in enumerate(opts, 1)
             )
-            if d.get("multi"):
+            if d.get("multi") or d.get("additive"):
                 opts_display = "SELECT ALL THAT APPLY (e.g. 1,3): " + opts_display
         dup = d.get("duplicate_of") or ""
         ws.append(
