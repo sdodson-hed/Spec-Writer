@@ -97,14 +97,25 @@ def balanced(src_slice: str) -> bool:
 
 def text_stream(src: str) -> tuple[str, list[int], list[bool]]:
     """Return (chars, offsets, mask): text outside markup, source offset of
-    each char, and mask[i]=True when the char is inside an <NTE> note."""
+    each char, and mask[i]=True when the char is inside an <NTE> note.
+
+    Two layout-bearing tags contribute synthetic whitespace so the flat
+    stream reads the way SpecsIntact publishes it (issue #42):
+      * <BRK/> — an explicit hard line break — emits "\\n".
+      * an <RTL> that directly follows </RID> with nothing between them (the
+        reference-article two-column idiom) emits a leading "\\t", so the
+        designation and its title don't run together ("ACI 117(2010)…").
+    Each synthetic char is mapped to the source offset of its originating
+    tag, keeping the char→source map monotonic (bisect- and splice-safe)."""
     chars: list[str] = []
     offs: list[int] = []
     mask: list[bool] = []
     nte_depth = 0
+    prev_close_rid = False  # last tag event was </RID> with no char since
     i, n = 0, len(src)
     while i < n:
         if src[i] == "<":
+            tag_start = i
             if src.startswith("<!--", i):
                 i = src.find("-->", i) + 3
             elif src.startswith("<?", i):
@@ -112,16 +123,32 @@ def text_stream(src: str) -> tuple[str, list[int], list[bool]]:
             else:
                 raw, i = _parse_tag(src, i)
                 body = raw[1:-1]
-                if body.startswith("/"):
-                    if body[1:].strip() == "NTE":
+                is_close = body.startswith("/")
+                is_self = not is_close and body.rstrip().endswith("/")
+                name = body.lstrip("/").split()[0].rstrip("/").strip()
+                if is_close:
+                    if name == "NTE":
                         nte_depth = max(0, nte_depth - 1)
-                elif not body.rstrip().endswith("/"):
-                    if body.split()[0].strip() == "NTE":
+                    prev_close_rid = name == "RID"
+                elif is_self:
+                    if name == "BRK":
+                        chars.append("\n")
+                        offs.append(tag_start)
+                        mask.append(nte_depth > 0)
+                    prev_close_rid = False
+                else:
+                    if name == "NTE":
                         nte_depth += 1
+                    if name == "RTL" and prev_close_rid:
+                        chars.append("\t")
+                        offs.append(tag_start)
+                        mask.append(nte_depth > 0)
+                    prev_close_rid = False
         else:
             chars.append(src[i])
             offs.append(i)
             mask.append(nte_depth > 0)
+            prev_close_rid = False  # real text separates RID from any RTL
             i += 1
     return "".join(chars), offs, mask
 

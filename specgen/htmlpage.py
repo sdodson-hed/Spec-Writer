@@ -334,7 +334,7 @@ button.primary { background: var(--accent); color: var(--accent-ink); border-col
   #navPanel, #navPanel.open { display: none !important; } }
 
 #doc { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
-  padding: 26px 30px; white-space: pre-wrap; font-size: 13.5px; line-height: 1.75;
+  padding: 26px 30px; white-space: pre-wrap; tab-size: 4; font-size: 13.5px; line-height: 1.75;
   overflow-wrap: break-word; }
 #doc mark { padding: 0 3px; border-radius: 4px; cursor: pointer; font-weight: 600;
   scroll-margin: 25vh; border: 1px solid transparent; }
@@ -511,6 +511,21 @@ const ds = DATA.decisions.filter(d => !d.in_note && !d.plural);
 const byId = Object.fromEntries(ds.map(d => [d.id, d]));
 const nPlural = DATA.decisions.filter(d => d.plural).length;
 const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+// View-mode paragraph reflow (issue #43). UFGS masters hard-wrap body text
+// at a fixed column with CRLFs; under white-space:pre-wrap those break
+// sentences mid-paragraph. A single source CRLF is fixed-width wrapping and
+// collapses to a space; a run of two or more CRLFs is a real paragraph break
+// and is kept; a lone newline is a BRK line break (no carriage return) and is
+// never matched, so it survives. Edit mode returns text verbatim because the
+// caret/offset math indexes the exact stream, so reflow must not run there.
+function reflow(s) {
+  if (editMode) return s;
+  return s.replace(/(?:[ \t]*\r\n[ \t]*)+/g, function (m) {
+    var n = (m.match(/\r\n/g) || []).length;
+    return n >= 2 ? "\n".repeat(n) : " ";
+  });
+}
+const escFlow = s => esc(reflow(s));
 __EDIT_CORE__
 let dirty = false;
 const save = () => { dirty = true; localStorage.setItem(KEY, JSON.stringify(state)); };
@@ -702,11 +717,11 @@ function noteWrap(a, b) {
     if (ne <= pos) continue;
     if (ns >= b) break;
     const s = Math.max(ns, pos), e2 = Math.min(ne, b);
-    html += esc(DATA.text.slice(pos, s)) +
-      `<b class="ntetxt">` + esc(DATA.text.slice(s, e2)) + `</b>`;
+    html += escFlow(DATA.text.slice(pos, s)) +
+      `<b class="ntetxt">` + escFlow(DATA.text.slice(s, e2)) + `</b>`;
     pos = e2;
   }
-  return html + esc(DATA.text.slice(pos, b));
+  return html + escFlow(DATA.text.slice(pos, b));
 }
 function origHtml(gapStart, a, b, emitted, rec, locked) {
   // original text slice [a,b) with nav anchors and locked-span tints.
@@ -740,7 +755,7 @@ function origHtml(gapStart, a, b, emitted, rec, locked) {
         ? `<span class="paranum">${esc(n.num)}</span>` : "";
       html += `<span class="navanchor" contenteditable="false" id="nav-${m.anchor}">${num}</span>`;
     } else {
-      html += `<span class="lockedtxt" contenteditable="false">${esc(DATA.text.slice(m.at, m.lockEnd))}</span>`;
+      html += `<span class="lockedtxt" contenteditable="false">${escFlow(DATA.text.slice(m.at, m.lockEnd))}</span>`;
       pos = m.lockEnd;
     }
   }
@@ -793,8 +808,8 @@ function buildDoc() {
   const emit = (sp) => {
     const kids = spans.filter(k => k.parent === sp);
     let inner = "", p = sp.s;
-    for (const k of kids) { inner += esc(DATA.text.slice(p, k.s)); inner += emit(k); p = k.e; }
-    inner += esc(DATA.text.slice(p, sp.e));
+    for (const k of kids) { inner += escFlow(DATA.text.slice(p, k.s)); inner += emit(k); p = k.e; }
+    inner += escFlow(DATA.text.slice(p, sp.e));
     if (sp.d) return `<mark data-id="${sp.d.id}" id="mk-${sp.d.id}">${inner}</mark>`;
     if (sp.tai) {
       const n = sp.e - sp.s;
