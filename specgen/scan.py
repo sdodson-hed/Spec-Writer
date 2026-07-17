@@ -39,6 +39,9 @@ _INVISIBLE_GAP_RE = re.compile(
 # submittal-classification idiom — keep/remove the reviewer flag and
 # fill in the reviewing office.
 _SUBREV_RE = re.compile(r"^;?\s*<SUB>\s*[GS]\b")
+# Subsection-level structural markup inside an option: the span wraps a whole
+# titled block, so adjacency runs split into independent optionals.
+_STRUCT_TAG_RE = re.compile(r"</?(?:SPT|PRT|TTL)\b")
 
 
 @dataclass
@@ -141,6 +144,7 @@ def scan_groups(src: str) -> tuple[list[Group], str, list[int]]:
         group_char_start = i
         in_note = mask[i]
         options: list[Option] = []
+        char_spans: list[tuple[int, int]] = []  # per-option [ .. ] char bounds
         end = i
         while i < n and text[i] == "[":
             depth, j = 0, i
@@ -161,6 +165,7 @@ def scan_groups(src: str) -> tuple[list[Group], str, list[int]]:
             options.append(
                 Option(text=inner, src_start=offs[i] + 1, src_end=offs[j])
             )
+            char_spans.append((i, j + 1))
             end = j + 1
             k = end
             while k < n and text[k] in " \t":
@@ -180,28 +185,45 @@ def scan_groups(src: str) -> tuple[list[Group], str, list[int]]:
                 i = end
                 break
         if options:
-            g_start, g_end = offs[group_char_start], offs[end - 1] + 1
-            safe = balanced(src[g_start:g_end]) and all(
-                balanced(src[o.src_start : o.src_end]) for o in options
+            # Adjacent spans that carry whole SUBSECTIONS (an option
+            # containing SPT/PRT/TTL markup) are independent include-or-
+            # delete blocks butted together, not one N-way choice — a run
+            # like "[Service Entrance Cables…][Nonmetallic Sheathed Cable…]"
+            # must not become an unanswerable mega-group. Split every such
+            # group into one single-option group per span.
+            split = len(options) > 1 and any(
+                _STRUCT_TAG_RE.search(src[o.src_start : o.src_end])
+                for o in options
             )
-            groups.append(
-                Group(
+            chunks = (
+                [[k] for k in range(len(options))]
+                if split
+                else [list(range(len(options)))]
+            )
+            for chunk in chunks:
+                opts = [options[k] for k in chunk]
+                c_lo = char_spans[chunk[0]][0]
+                c_hi = char_spans[chunk[-1]][1]
+                g_start, g_end = offs[c_lo], offs[c_hi - 1] + 1
+                safe = balanced(src[g_start:g_end]) and all(
+                    balanced(src[o.src_start : o.src_end]) for o in opts
+                )
+                g = Group(
                     gid=f"BRK-{len(groups) + 1:04d}",
-                    kind=classify([o.text for o in options]),
-                    options=options,
+                    kind=classify([o.text for o in opts]),
+                    options=opts,
                     src_start=g_start,
                     src_end=g_end,
-                    char_start=group_char_start,
-                    char_end=end,
+                    char_start=c_lo,
+                    char_end=c_hi,
                     safe=safe,
                     in_note=in_note,
                 )
-            )
-            g = groups[-1]
-            if g.kind == "optional" and len(g.options) == 1:
-                raw_opt = src[g.options[0].src_start : g.options[0].src_end]
-                if _SUBREV_RE.match(raw_opt.strip()):
-                    g.kind = "submittal-review"
+                if g.kind == "optional" and len(g.options) == 1:
+                    raw_opt = src[g.options[0].src_start : g.options[0].src_end]
+                    if _SUBREV_RE.match(raw_opt.strip()):
+                        g.kind = "submittal-review"
+                groups.append(g)
         else:
             i = group_char_start + 1
     return groups, text, offs

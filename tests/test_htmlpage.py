@@ -59,6 +59,28 @@ def test_page_has_gate_units_and_notes(tmp_path):
     assert "tailoring_spans" in html
 
 
+def test_show_in_document_and_note_prominence(tmp_path):
+    p = tmp_path / "n.SEC"
+    p.write_bytes(NOTED.encode(secfile.ENCODING))
+    out = tmp_path / "n.html"
+    write_html(build_manifest(secfile.parse(p)), out)
+    html = out.read_text(encoding="utf-8")
+    # card -> document scroll-back (#39)
+    assert 'data-act="showdoc"' in html
+    # designer notes bolded in the document and opened on the card (#40)
+    assert "ntetxt" in html and "note_spans" in html
+    assert '<details class="panel notewrap" open>' in html
+
+
+def test_note_spans_cover_note_text(tmp_path):
+    p = tmp_path / "n.SEC"
+    p.write_bytes(NOTED.encode(secfile.ENCODING))
+    m = build_manifest(secfile.parse(p))
+    assert m["note_spans"], "NOTED fixture has an <NTE> block"
+    a, b = m["note_spans"][0]
+    assert "Select scroll" in m["text"][a:b]
+
+
 def test_esc_helper_escapes_double_quotes(tmp_path):
     # esc() output is interpolated into attribute values (value="...",
     # data-opt="..."); unescaped quotes in a typed answer like 30" dia
@@ -312,11 +334,11 @@ def test_nested_fill_core_functions_in_page(tmp_path):
 
 def test_nested_fill_panel_hooks(tmp_path):
     html = _page(tmp_path)
-    assert "data-fill=" in html
+    # fill-in blanks render as inputs INSIDE the option row (issue #37)
+    assert "data-ofill=" in html
+    assert "optrow" in html
     assert 'data-act="applyfills"' in html
-    # badge: all-blank nested groups promise an in-page prompt…
-    assert "has fill-in value(s) — you'll be prompted after choosing" in html
-    # …while non-blank nested groups keep the follow-up-decision warning
+    # non-blank nested groups keep the follow-up-decision warning
     assert "contains further choices" in html
 
 
@@ -338,14 +360,16 @@ def test_pending_fills_gates_progress_nav_export_and_mark(tmp_path):
 
 def test_applyfills_force_sets_with_metadata_and_collision_guard(tmp_path):
     html = _page(tmp_path)
-    handler = html.split('querySelector("[data-act=applyfills]")')[1].split(
-        "wireNav(")[0]
+    handler = html.split("const applyRow = optNo =>")[1].split("const fb =")[0]
     # stores the composed literal plus re-edit metadata
     assert "rec.option" in handler and "rec.fills" in handler
     # digits-only composed text that collides with an option number is blocked
     assert "optionIdx(d, composed)" in handler
-    # force-set (multi-handler pattern): setAnswer would toggle off on same value
-    assert "setAnswer(" not in handler
+    # the composed value is force-set (setAnswer would toggle off on an
+    # unchanged value); the only setAnswer is the pending-pick fallback for
+    # a row whose inputs are not yet all filled
+    assert "rec.answer = composed" in handler
+    assert handler.count("setAnswer(") == 1
 
 
 def test_answer_paths_clear_fill_metadata(tmp_path):

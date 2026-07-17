@@ -185,6 +185,33 @@ def test_html_page_carries_additive_ui(tmp_path):
     assert '"additive": true' in html and '"connector": "and"' in html
 
 
+def test_default_number_blank_idiom():
+    # issue #38: "[5] [_____] percent" surfaces as a choice between the
+    # default value and a fill-in — not additive (no connectors)
+    src = "<SEC><TXT>Cap [5] [_____] percent of outlet boxes.</TXT></SEC>"
+    g = _groups(src)[0]
+    assert g.kind == "choice"
+    assert [o.text for o in g.options] == ["5", "_____"]
+    assert not is_additive(g)
+
+
+def test_nested_default_number_resurfaces_after_keep(tmp_path):
+    # nested inside an optional block (the reviewer's actual 2.5.1 case):
+    # keeping the block leaves [5][___] bracketed, and the post-generate
+    # rescan surfaces it as an OPEN@ decision instead of losing it
+    src = (
+        "<SEC><TXT>[Provide plugs for [5] [_____] percent of boxes.]"
+        "</TXT></SEC>"
+    )
+    master = tmp_path / "m.SEC"
+    master.write_bytes(src.encode(secfile.ENCODING))
+    out = tmp_path / "out.sec"
+    summary = generate(master, {}, {"BRK-0001": {"answer": "keep"}}, out)
+    assert summary["unresolved"] == 1
+    unresolved = out.with_suffix(".unresolved.md").read_text(encoding="utf-8")
+    assert "OPEN@" in unresolved and "5" in unresolved
+
+
 def test_workbook_marks_additive_select_all(tmp_path):
     from openpyxl import load_workbook
 

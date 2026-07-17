@@ -28,6 +28,7 @@ from .scan import (
     is_connector,
     is_plural,
     scan_groups,
+    text_stream,
 )
 from .secfile import Element, SecFile
 
@@ -298,6 +299,20 @@ def build_manifest(sec: SecFile) -> dict:
         if _content_span(t) is not None
     ]
 
+    # contiguous <NTE> ranges in the text stream, so the page can style
+    # designer notes distinctly (they read as guidance, not spec text)
+    _, _, mask = text_stream(sec.source)
+    note_spans: list[list[int]] = []
+    run_start: int | None = None
+    for idx, in_nte in enumerate(mask):
+        if in_nte and run_start is None:
+            run_start = idx
+        elif not in_nte and run_start is not None:
+            note_spans.append([run_start, idx])
+            run_start = None
+    if run_start is not None:
+        note_spans.append([run_start, len(mask)])
+
     unit_spans: list[dict] = []
 
     def _walk_units(el: Element) -> None:
@@ -353,6 +368,7 @@ def build_manifest(sec: SecFile) -> dict:
         "submittals": submittal_items,
         "references": declared,
         "unit_spans": unit_spans,
+        "note_spans": note_spans,
         "body_submittal_tag_uses": body_sub_uses,
         # full tag-free text of the section; char_start/char_end above index
         # into this, so a UI can show every decision in situ

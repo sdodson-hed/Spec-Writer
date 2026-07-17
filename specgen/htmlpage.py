@@ -406,6 +406,20 @@ button.primary { background: var(--accent); color: var(--accent-ink); border-col
 .opts button { text-align: left; line-height: 1.4; }
 .opts button.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .opts button.danger.on { background: #b91c1c; border-color: #b91c1c; color: #fff; }
+#doc .ntetxt { font-weight: 700; }
+.chip.showdoc { cursor: pointer; margin-left: auto; }
+.chip.showdoc:hover { border-color: var(--accent); color: var(--accent); }
+.notewrap { padding: 8px 10px; border-left: 3px solid var(--choice); }
+.optrow { text-align: left; line-height: 1.7; border: 1px solid var(--line);
+  background: var(--card); border-radius: 8px; padding: 6px 12px;
+  cursor: pointer; }
+.optrow:hover { border-color: var(--accent); }
+.optrow.on { background: var(--accent); color: var(--accent-ink);
+  border-color: var(--accent); }
+.optrow input { font: inherit; font-size: 12.5px; width: 90px;
+  padding: 1px 6px; margin: 0 2px; border: 1px solid var(--line);
+  border-radius: 6px; background: var(--card); color: var(--ink); }
+.optrow.on input { border-color: var(--accent-ink); }
 .removelink { font-size: 12px; color: var(--muted); padding: 2px 2px 0; }
 .removelink a { color: var(--muted); cursor: pointer; text-decoration: underline dotted; }
 .removelink a:hover { color: #b91c1c; }
@@ -680,6 +694,20 @@ function lockedOrigIn(s, e) {
   }
   return v;
 }
+function noteWrap(a, b) {
+  // plain-text emission with designer-note ranges bolded. The wrapper adds
+  // no text of its own, so edit-mode offset math sees through it.
+  let html = "", pos = a;
+  for (const [ns, ne] of DATA.note_spans || []) {
+    if (ne <= pos) continue;
+    if (ns >= b) break;
+    const s = Math.max(ns, pos), e2 = Math.min(ne, b);
+    html += esc(DATA.text.slice(pos, s)) +
+      `<b class="ntetxt">` + esc(DATA.text.slice(s, e2)) + `</b>`;
+    pos = e2;
+  }
+  return html + esc(DATA.text.slice(pos, b));
+}
 function origHtml(gapStart, a, b, emitted, rec, locked) {
   // original text slice [a,b) with nav anchors and locked-span tints.
   // `locked` is the gap's full locked-range list (from lockedOrigIn on the
@@ -704,7 +732,7 @@ function origHtml(gapStart, a, b, emitted, rec, locked) {
   marks.sort((x, y) => x.at - y.at);
   let html = "", pos = a;
   for (const m of marks) {
-    html += esc(DATA.text.slice(pos, m.at));
+    html += noteWrap(pos, m.at);
     pos = m.at;
     if (m.anchor !== undefined) {
       const n = DATA.nav[m.anchor];
@@ -716,7 +744,7 @@ function origHtml(gapStart, a, b, emitted, rec, locked) {
       pos = m.lockEnd;
     }
   }
-  html += esc(DATA.text.slice(pos, b));
+  html += noteWrap(pos, b);
   return html;
 }
 function gapInner(s, e) {
@@ -920,9 +948,11 @@ function renderPanel() {
   let h = `<div class="dec-top"><span class="chip">${d.id}</span>
     <span class="chip kind-${d.kind}">${d.kind}</span>`;
   if (!d.safe) h += `<span class="chip warn">manual edit needed</span>`;
+  h += `<button class="chip showdoc" data-act="showdoc"
+    title="Scroll the document to this decision">show in text ⇱</button>`;
   h += `</div><div class="loc">${esc(d.location)}</div>`;
-  if (d.note_guidance) h += `<details class="panel" style="padding:8px 10px">
-    <summary style="cursor:pointer;font-size:12px;color:var(--muted)">Designer note</summary>
+  if (d.note_guidance) h += `<details class="panel notewrap" open>
+    <summary style="cursor:pointer;font-size:12px;font-weight:700">Designer note</summary>
     <div style="font-size:12.5px;margin-top:6px">${esc(d.note_guidance)}</div></details>`;
   if (d.hint) h += `<div class="hint">${esc(d.hint)}</div>`;
   if (!d.safe) {
@@ -965,35 +995,44 @@ function renderPanel() {
     h += `<div class="opts">` + d.options.map((o, i) =>
       isConnectorOpt(d, i) ? "" :
       `<button data-multi="${i + 1}" class="${picked.has(String(i + 1)) ? "on" : ""}">` +
-      `${picked.has(String(i + 1)) ? "☑" : "☐"} ${esc(d.additive ? additiveCore(o) : o)}${nestedTag(o, false)}</button>`).join("") +
+      `${picked.has(String(i + 1)) ? "☑" : "☐"} ${esc(d.additive ? additiveCore(o) : o)}${nestedTag(o)}</button>`).join("") +
       removeBtn(d, e, "none of these — remove all") + `</div>`;
     h += freeform(d, e, "…or type replacement text");
   } else if (d.kind === "choice") {
     const meta = fillMeta(d, own);
-    h += `<div class="hint">Choose one.</div>`;
-    h += `<div class="opts">` + d.options.map((o, i) =>
-      `<button data-val="${i + 1}" class="${e.a == String(i + 1) || (meta && meta.option === i + 1) ? "on" : ""}">` +
-      `${i + 1}) ${esc(o)}${nestedTag(o, true)}</button>`).join("") +
-      removeBtn(d, e, "remove entirely") + `</div>`;
-    // follow-up prompt: option picked but blanks unfilled (pending), or a
-    // composed answer being re-edited (metadata validated by fillMeta)
+    // option picked but blanks unfilled (pending), or a composed answer
+    // being re-edited (metadata validated by fillMeta)
     const pendIdx = optionIdx(d, e.a);
     const fillOpt = pendingFills(d) ? pendIdx[0] + 1 : meta ? meta.option : 0;
-    if (fillOpt) {
-      const oTxt = d.options[fillOpt - 1];
-      const blanks = nestedGroups(oTxt).filter(g => g.isBlank);
-      const fills = meta ? meta.fills : [];
-      h += `<div data-fillblock="${fillOpt}" style="margin-top:8px">
-        <div class="hint">Option ${fillOpt} has ${blanks.length} fill-in value(s) — type each, then Apply.</div>`;
+    h += `<div class="hint">Choose one.</div>`;
+    h += `<div class="opts">` + d.options.map((o, i) => {
+      const on = e.a == String(i + 1) || (meta && meta.option === i + 1);
+      const blanks = nestedGroups(o).filter(g => g.isBlank);
+      if (!blanks.length)
+        return `<button data-val="${i + 1}" class="${on ? "on" : ""}">` +
+          `${i + 1}) ${esc(o)}${nestedTag(o)}</button>`;
+      // fill-in blanks render as inputs INSIDE the option row: pick and
+      // type in one place (issue #37); Enter or Apply composes the answer
+      const fills = on && meta && meta.option === i + 1 ? meta.fills : [];
+      let inner = "", pos = 0;
       blanks.forEach((g, k) => {
-        h += `<div class="loc">${esc(fillLabel(oTxt, g))}</div>
-          <div class="freeform"><input type="text" data-fill="${k}"
-          placeholder="value" value="${esc(fills[k] || "")}"></div>`;
+        inner += esc(o.slice(pos, g.start)) +
+          `<input data-ofill="${k}" placeholder="value" ` +
+          `value="${esc(fills[k] || "")}">`;
+        pos = g.end;
       });
-      h += `<div class="freeform"><button class="primary"
-        data-act="applyfills">Apply value(s)</button></div>
-        <div class="hint" data-fillmsg style="color:#b91c1c"></div></div>`;
-    }
+      inner += esc(o.slice(pos));
+      const others = nestedGroups(o).some(g => !g.isBlank);
+      const warn = others ? ` <span style="color:var(--choice);font-size:11px;
+        font-weight:700">⚠ contains further choices — they return as
+        follow-up decisions</span>` : "";
+      return `<div class="optrow ${on ? "on" : ""}" data-optfill="${i + 1}">` +
+        `${i + 1}) ${inner}${warn}</div>`;
+    }).join("") + removeBtn(d, e, "remove entirely") + `</div>`;
+    if (fillOpt)
+      h += `<div class="freeform" style="margin-top:6px"><button class="primary"
+        data-act="applyfills" data-opt="${fillOpt}">Apply value(s)</button></div>
+        <div class="hint" data-fillmsg style="color:#b91c1c"></div>`;
     h += freeform(d, e, "…or type replacement text");
   } else if (d.kind === "optional") {
     h += `<div class="opts">
@@ -1057,38 +1096,55 @@ function renderPanel() {
     else delete state.answers[d.id];
     save(); refresh();
   };
-  const fb = p.querySelector("[data-act=applyfills]");
-  if (fb) {
-    const fillInputs = [...p.querySelectorAll("input[data-fill]")];
+  // inline fill-in option rows (issue #37): click picks, type + Enter (or
+  // Apply) composes the final text; the stored answer keeps the same
+  // {answer, option, fills} shape the old follow-up block produced
+  const rowInputs = optNo =>
+    [...p.querySelectorAll(`[data-optfill="${optNo}"] input[data-ofill]`)];
+  const applyRow = optNo => {
+    const vals = rowInputs(optNo).map(x => x.value.trim());
     const fmsg = p.querySelector("[data-fillmsg]");
-    const optNo = +p.querySelector("[data-fillblock]").dataset.fillblock;
-    const applyFills = () => {
-      const vals = fillInputs.map(x => x.value.trim());
-      if (vals.some(v => !v)) {
-        fmsg.textContent = "Fill in every value before applying.";
-        return;
-      }
-      const composed = composeFill(d.options[optNo - 1], vals);
-      if (optionIdx(d, composed) !== null) {
-        fmsg.textContent = "Add units or wording — a bare number " + composed +
-          " would be read as option " + composed + " when generating.";
-        return;
-      }
-      // setAnswer toggles off on an unchanged value; force-set the composed
-      // literal and keep the re-edit metadata on the record
-      const rec = state.answers[d.id] || {};
-      rec.answer = composed;
-      rec.option = optNo;
-      rec.fills = vals;
-      state.answers[d.id] = rec;
-      save(); refresh();
+    if (vals.some(v => !v)) {
+      if (eff(d).a !== String(optNo)) setAnswer(d.id, String(optNo));
+      else if (fmsg) fmsg.textContent = "Fill in every value before applying.";
+      return;
+    }
+    const composed = composeFill(d.options[optNo - 1], vals);
+    if (optionIdx(d, composed) !== null) {
+      if (fmsg) fmsg.textContent = "Add units or wording — a bare number " +
+        composed + " would be read as option " + composed + " when generating.";
+      return;
+    }
+    // setAnswer toggles off on an unchanged value; force-set the composed
+    // literal and keep the re-edit metadata on the record
+    const rec = state.answers[d.id] || {};
+    rec.answer = composed;
+    rec.option = optNo;
+    rec.fills = vals;
+    state.answers[d.id] = rec;
+    save(); refresh();
+  };
+  const fb = p.querySelector("[data-act=applyfills]");
+  if (fb) fb.onclick = () => applyRow(+fb.dataset.opt);
+  p.querySelectorAll(".optrow").forEach(row => {
+    const optNo = +row.dataset.optfill;
+    row.onclick = ev => {
+      if (ev.target.tagName === "INPUT") return;
+      const own2 = state.answers[d.id] || {};
+      const picked = eff(d).a === String(optNo) ||
+        (fillMeta(d, own2) || {}).option === optNo;
+      if (!picked) { setAnswer(d.id, String(optNo)); return; }
+      const empty = rowInputs(optNo).find(x => !x.value.trim());
+      (empty || rowInputs(optNo)[0]).focus();
     };
-    fb.onclick = applyFills;
-    fillInputs.forEach(x => x.onkeydown = ev => {
-      if (ev.key === "Enter") applyFills();
+    rowInputs(optNo).forEach(x => x.onkeydown = ev => {
+      if (ev.key === "Enter") applyRow(optNo);
     });
-    const firstEmpty = fillInputs.find(x => !x.value.trim());
-    if (firstEmpty) firstEmpty.focus();
+  });
+  const pendRow = p.querySelector("[data-act=applyfills]");
+  if (pendRow) {
+    const empty = rowInputs(+pendRow.dataset.opt).find(x => !x.value.trim());
+    if (empty) empty.focus();
   }
   wireNav(p);
 }
@@ -1100,14 +1156,11 @@ function removeBtn(d, e, label) {
   return `<div class="removelink"><a data-val="delete" class="${e.a === "delete" ? "on" : ""}">${label}…</a>
     <span>(mid-sentence — rarely correct)</span></div>`;
 }
-function nestedTag(o, canFill) {
-  // canFill: single-select options prompt in-page for all-blank nested
-  // groups; multi options (block markup) keep the follow-up-decision path
+function nestedTag(o) {
+  // nested non-blank groups stay embedded in their option: they return as
+  // follow-up decisions (OPEN@ backstop at generate). Blank-only nested
+  // groups never reach here — they render as inline inputs in the row.
   if (!o.includes("[")) return "";
-  const groups = nestedGroups(o);
-  if (canFill && groups.length && groups.every(g => g.isBlank))
-    return ` <span style="color:var(--blank);font-size:11px;font-weight:700">
-      ✎ has fill-in value(s) — you'll be prompted after choosing</span>`;
   return ` <span style="color:var(--choice);font-size:11px;font-weight:700">
       ⚠ contains further choices — they return as follow-up decisions</span>`;
 }
@@ -1132,6 +1185,11 @@ function wireNav(p) {
     if (b.dataset.nav === "next") gotoNextUnanswered();
     else gotoPrev();
   });
+  const sd = p.querySelector("[data-act=showdoc]");
+  if (sd) sd.onclick = () => {
+    const m = document.getElementById("mk-" + activeId);
+    if (m) m.scrollIntoView({ block: "center", behavior: "smooth" });
+  };
 }
 function gotoNextUnanswered() {
   const start = activeId ? ds.findIndex(d => d.id === activeId) : -1;
