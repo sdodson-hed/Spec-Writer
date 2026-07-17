@@ -101,6 +101,34 @@ eq(flowSliceIn(T3, flowRunsFor(T3), 0, T3.length), "list\nnext",
    "BRK-bearing run collapses to one break");
 eq(syntheticIn("a\tb\r\nc\nd", 0, 8), [[1,2],[6,7]],
    "tab and lone-newline are synthetic; CRLF newline is not");
+
+// ---- flowed edit mode: widths, mapping, atomic deletion expansion ----
+const GT = "ab\r\ncd";                       // gap text, run [2,4) -> " "
+const FR = flowRunsFor(GT);
+eq(gapWidthsIn(GT, {}, 0, 6, FR), [1,1,0,0,1,1], "run chars are zero-width");
+eq(domToDispW([1,1,0,0,1,1], 2), 2, "dom 2 maps before the run cluster");
+eq(dispToDomW([1,1,0,0,1,1], 4), 2, "display past the run projects to dom 2");
+// typed insertion: i chars are width 1 (except \r of a typed CRLF pair)
+const REC = { "ME@2": { start: 2, end: 2, before: "", after: "XY", notes: "" } };
+eq(gapWidthsIn(GT, REC, 0, 6, FR), [1,1,1,1,0,0,1,1], "typed chars width 1");
+// forward-delete whose 1-char target lands inside the run expands to the
+// WHOLE run — a partial strike would leave a mangled \r or \n in the master
+let ar = applyGapOp(GT, {}, 0, 6, { kind: "fwd", caret: 2 }, [],
+                    FR.map(r => [r.s, r.e]));
+eq(ar.records, { "ME@2": { start: 2, end: 4, before: "\r\n", after: "",
+                           notes: "" } }, "run deletion is atomic");
+// backspace before the run targets the real char, no expansion
+ar = applyGapOp(GT, {}, 0, 6, { kind: "bs", caret: 2 }, [],
+                FR.map(r => [r.s, r.e]));
+eq(ar.records, { "ME@1": { start: 1, end: 2, before: "b", after: "",
+                           notes: "" } }, "bs before run hits the real char");
+// a run holding a locked synthetic char (<BRK/>): expansion covers the lock
+// and the whole op is blocked
+const BT = "x\ny";                            // BRK newline at [1,2)
+const BFR = flowRunsFor(BT);
+ar = applyGapOp(BT, {}, 0, 3, { kind: "fwd", caret: 1 },
+                syntheticIn(BT, 0, 3), BFR.map(r => [r.s, r.e]));
+eq(ar, { blocked: true }, "BRK line break is not deletable");
 console.log("flow tests passed");
 """
 
@@ -170,7 +198,7 @@ def test_brk_does_not_break_roundtrip_or_manifest(tmp_path):
     assert "\t" in m["text"] and "\n\n" in m["text"]
 
 
-def test_page_reflows_in_view_keeps_literal_in_edit(tmp_path):
+def test_page_flows_both_modes_and_anchors_scroll(tmp_path):
     p = tmp_path / "r.SEC"
     p.write_bytes(REF.encode(secfile.ENCODING))
     out = tmp_path / "r.html"
@@ -178,8 +206,19 @@ def test_page_reflows_in_view_keeps_literal_in_edit(tmp_path):
     html = out.read_text(encoding="utf-8")
     assert "function flowRunsFor(text)" in html    # global run classification
     assert "function flowSlice(a, b)" in html
-    assert "if (editMode) return DATA.text.slice(a, b);" in html  # edit verbatim
     assert "tab-size: 4" in html                    # RID/RTL columns
+    # edit mode shows the SAME flowed layout: run replacements render as
+    # non-editable spans and the caret math skips them via per-char widths
+    assert 'class="flowbrk" contenteditable="false"' in html
+    assert "function gapWidthsIn(text, records, s, e, frs)" in html
+    assert "domToDispW(gapWidths(gapEl)" in html
+    assert '".navanchor,.flowbrk"' in html
+    # deletions expand to whole layout runs (never a partial CRLF strike)
+    assert "atomicOrig" in html
+    # toggling edit/view keeps the reader's place
+    assert "function rebuildDocAnchored()" in html
+    body = html.split('getElementById("btnEdit").onclick')[1].split("};")[0]
+    assert "rebuildDocAnchored()" in body
 
 
 def test_update_paths_share_build_rendering(tmp_path):

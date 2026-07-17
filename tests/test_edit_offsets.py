@@ -1,15 +1,17 @@
 """Regression test for the DOM<->display offset mapping behind inline editing.
 
-The master text keeps CRLF line endings, but the HTML parser collapses \r\n
-to \n when a gap's innerHTML is parsed — so DOM text nodes are one char
-shorter per line than the run model's display text. dispOffset/setCaretAt
-must translate between the two spaces or every caret lands earlier than the
-click by the number of preceding lines (the "spec-the-ification" bug).
+Edit mode renders the FLOWED layout: each whitespace run of the master text
+(CRLF line wraps, blank lines, BRK breaks) renders as a non-editable
+.flowbrk span holding its replacement, so the editable DOM contains only
+real master chars — run chars are zero-width in DOM space. dispOffset /
+setCaretAt translate via a per-display-char width table (gapWidthsIn) or
+every caret lands earlier than the click (the "spec-the-ification" bug
+lineage).
 
 The DOM helpers live in the page template, so this harness pairs them with a
 minimal hand-rolled DOM shim (no jsdom): just the surface those functions
-touch, modelling navanchor spans (zero-width), lockedtxt spans (counted),
-prior <s>/<ins> edit runs, and the parser's CRLF normalization.
+touch, modelling navanchor + flowbrk spans (zero-width), lockedtxt spans
+(counted), and prior <s>/<ins> edit runs.
 """
 
 import shutil
@@ -22,7 +24,7 @@ from specgen.htmlpage import _TEMPLATE, EDIT_CORE_JS
 
 def _dom_helpers_js():
     """The DOM offset helpers as they ship in the page template."""
-    i = _TEMPLATE.index("function textLenNoAnchors")
+    i = _TEMPLATE.index("const SKIP_SEL")
     j = _TEMPLATE.index("function selCtx")
     return _TEMPLATE[i:j]
 
@@ -41,9 +43,9 @@ function El(cls, kids, tag) {
     get textContent() { return kids.map(k => k.textContent).join(""); },
     contains(n) { for (let p = n; p; p = p.parentNode) if (p === el) return true;
                   return false; },
-    closest(sel) { const c = sel.slice(1);
+    closest(sel) { const cs = sel.split(",").map(s => s.trim().slice(1));
       for (let p = el; p; p = p.parentElement)
-        if (p.classList && p.classList.contains(c)) return p;
+        if (p.classList && cs.some(c => p.classList.contains(c))) return p;
       return null; },
   };
   kids.forEach((k, i) => {
@@ -106,36 +108,60 @@ const ANCHOR_AT = TEXT.indexOf("REFERENCES");
 const DATA = { text: TEXT };
 const state = { edits: EDITS };
 
-// Build the gap DOM exactly as gapInner would render it in redline view,
-// with each text node holding the PARSER-NORMALIZED text (\r\n -> \n).
-const norm = (t) => t.replace(/\r\n/g, "\n");
-const kids = [
-  TextNode(norm(TEXT.slice(0, ANCHOR_AT))),
-  El("navanchor", [El("paranum", [TextNode("1.1")])]),
-  TextNode(norm(TEXT.slice(ANCHOR_AT, REC_START))),
-  El("me", [TextNode("publications")], "S"),
-  El("me", [TextNode("docs")], "INS"),
-  TextNode(norm(TEXT.slice(REC_START + "publications".length, LS))),
-  El("lockedtxt", [TextNode(norm(TEXT.slice(LS, LE)))]),
-  TextNode(norm(TEXT.slice(LE, E))),
-];
+// template wrapper the sliced helpers call (page defines it near the top)
+let flowRuns = null;
+function flowRunsAll() {
+  if (!flowRuns) flowRuns = flowRunsFor(DATA.text);
+  return flowRuns;
+}
+
+// Build the gap DOM exactly as gapInner renders it in FLOWED edit mode:
+// non-run text verbatim in text nodes; every whitespace run replaced by a
+// non-editable flowbrk span holding its replacement.
+function flowKids(a, b) {
+  const out = [];
+  let pos = a;
+  for (const r of flowRunsAll()) {
+    if (r.e <= a || r.s >= b) continue;
+    if (r.s > pos) out.push(TextNode(TEXT.slice(pos, r.s)));
+    if (r.s >= a) out.push(El("flowbrk", [TextNode(r.rep)]));
+    pos = Math.min(r.e, b);
+  }
+  if (pos < b) out.push(TextNode(TEXT.slice(pos, b)));
+  return out;
+}
+const kids = [].concat(
+  flowKids(0, ANCHOR_AT),
+  [El("navanchor", [El("paranum", [TextNode("1.1")])])],
+  flowKids(ANCHOR_AT, REC_START),
+  [El("me", [TextNode("publications")], "S"),
+   El("me", [TextNode("docs")], "INS")],
+  flowKids(REC_START + "publications".length, LS),
+  [El("lockedtxt", flowKids(LS, LE))],
+  flowKids(LE, E),
+);
 const gap = El("gap", kids);
 gap.dataset.s = String(S);
 gap.dataset.e = String(E);
 
 // ---- the user's click: caret right after "and" ----
-const caretNode = kids[5];                        // text between the edit and the lock
+const caretNode = kids.find(k =>
+  k.nodeType === 3 && k.textContent.indexOf(" listed") >= 0);
 const domOff = caretNode.textContent.indexOf(" listed");
 const wantOrig = TEXT.indexOf(" listed");         // original offset after "and"
 
 const runs = gapRuns(TEXT, EDITS, S, E);
 const disp = dispOffset(gap, caretNode, domOff);
 eq(displayToOrig(runs, S, disp), wantOrig,
-   "clicked caret maps to the clicked original offset (CRLF gap)");
+   "clicked caret maps to the clicked original offset (flowed gap)");
 
-// element-container selection (browser sometimes reports the gap element)
-eq(displayToOrig(runs, S, dispOffset(gap, gap, 5)), REC_START + "publications".length,
-   "element-container offset maps past the prior edit");
+// element-container selection (browser sometimes reports the gap element):
+// offset counts child nodes; compute the expected orig from the DOM chars
+// the first 5 children hold ("alpha line one" + flowbrk + navanchor +
+// "REFERENCES" + flowbrk = 24 editable chars = orig 26, after REFERENCES)
+eq(displayToOrig(runs, S, dispOffset(gap, gap, 5)),
+   TEXT.indexOf("The publications") - 2,
+   "element-container offset maps across zero-width fillers");
 
 // ---- caret restore is the exact inverse ----
 setCaretAt(gap, disp);
@@ -145,11 +171,17 @@ const ctx = currentRange.startContainer.textContent
   .slice(currentRange.startOffset - 3, currentRange.startOffset + 7);
 eq(ctx, "and listed", "restored caret sits visually after 'and'");
 
-// caret at end of a line maps before the \r, never between \r and \n
-const eolDom = caretNode.textContent.indexOf("\n");        // after "... basic"
-const eolDisp = dispOffset(gap, caretNode, eolDom);
+// caret at end of a line and at start of the next line both map to the
+// line-break run's start (zero-width cluster; ties resolve before it)
+const basicNode = kids.find(k =>
+  k.nodeType === 3 && k.textContent.indexOf("by basic") >= 0);
+const eolDisp = dispOffset(gap, basicNode, basicNode.textContent.length);
 eq(displayToOrig(runs, S, eolDisp), TEXT.indexOf("\r\ndesignation"),
-   "end-of-line caret maps before the CRLF pair");
+   "end-of-line caret maps to the CRLF run start");
+const nextNode = kids.find(k =>
+  k.nodeType === 3 && k.textContent.indexOf("designation") >= 0);
+eq(dispOffset(gap, nextNode, 0), eolDisp,
+   "start-of-next-line caret maps to the same display offset");
 console.log("OK");
 """
 

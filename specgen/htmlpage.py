@@ -181,7 +181,43 @@ function opBlocked(runs, gapStart, lockedOrig, from, to) {
   }
   return false;
 }
-function applyGapOp(text, records, s, e, op, lockedOrig) {
+// Per-display-char DOM width for a gap rendered in FLOWED edit mode: original
+// chars inside a layout run (frs = flowRunsFor ranges) render as a
+// non-editable replacement span, so they are zero-width in the editable DOM;
+// typed (i) chars are width 1 except the \r of a CRLF pair, which the HTML
+// parser collapses. This replaces the old CRLF-only domToDisp mapping.
+function gapWidthsIn(text, records, s, e, frs) {
+  const runs = gapRuns(text, records, s, e);
+  const w = [];
+  let orig = s, fi = 0;
+  const inRun = off => {
+    while (fi < frs.length && frs[fi].e <= off) fi++;
+    return fi < frs.length && frs[fi].s <= off;
+  };
+  for (const r of runs) {
+    if (r.t === "i") {
+      for (let k = 0; k < r.text.length; k++)
+        w.push(r.text[k] === "\r" && r.text[k + 1] === "\n" ? 0 : 1);
+    } else {
+      for (let k = 0; k < r.text.length; k++) w.push(inRun(orig + k) ? 0 : 1);
+      orig += r.text.length;
+    }
+  }
+  return w;
+}
+function domToDispW(w, dom) {
+  // smallest display offset whose DOM-projected prefix length is `dom`
+  // (ties resolve before a zero-width cluster)
+  let k = 0;
+  for (let i = 0; i < w.length; i++) { if (k >= dom) return i; k += w[i]; }
+  return w.length;
+}
+function dispToDomW(w, disp) {
+  let k = 0;
+  for (let i = 0; i < disp && i < w.length; i++) k += w[i];
+  return k;
+}
+function applyGapOp(text, records, s, e, op, lockedOrig, atomicOrig) {
   let runs = gapRuns(text, records, s, e);
   const dispLen = runs.reduce((n, r) => n + r.text.length, 0);
   let from, to, ins = "";
@@ -195,6 +231,23 @@ function applyGapOp(text, records, s, e, op, lockedOrig) {
   }
   if (from > to) { const x = from; from = to; to = x; }
   if (from < 0 || to > dispLen) return null;
+  // Atomic layout runs (flowed edit mode): a deletion touching part of a
+  // whitespace run expands to the WHOLE run — a partial strike (e.g. the \r
+  // of a CRLF) would leave a mangled line ending in the master. Expansion
+  // happens BEFORE the lock check, so a run holding a locked synthetic char
+  // (<BRK/>) blocks the whole operation.
+  if (to > from && atomicOrig && atomicOrig.length) {
+    let a = displayToOrig(runs, s, from), b = displayToOrig(runs, s, to);
+    for (const [as0, ae0] of atomicOrig) {
+      // clamp: a run may straddle the gap's edge (e.g. a removed-tailoring
+      // island boundary); only the in-gap part is expandable
+      const as = Math.max(as0, s), ae = Math.min(ae0, e);
+      if (as < ae && a < ae && b > as) {
+        if (as < a) { from = origToDisplay(runs, s, as); a = as; }
+        if (ae > b) { to = origToDisplay(runs, s, ae); b = ae; }
+      }
+    }
+  }
   if (opBlocked(runs, s, lockedOrig, from, to)) return { blocked: true };
   // 1) strike/remove the selected range
   let struckEnd = from, struckNew = false;
@@ -558,16 +611,40 @@ const ds = DATA.decisions.filter(d => !d.in_note && !d.plural);
 const byId = Object.fromEntries(ds.map(d => [d.id, d]));
 const nPlural = DATA.decisions.filter(d => d.plural).length;
 const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-// View-mode paragraph reflow (issue #43) — thin position-based wrappers over
-// the pure core (flowRunsFor / flowSliceIn / syntheticIn in the edit core).
-// Edit mode renders text verbatim: the caret/offset math indexes the exact
-// stream, so reflow never runs there.
+// Paragraph reflow (issues #43, and flowed EDIT mode) — thin position-based
+// wrappers over the pure core (flowRunsFor / flowSliceIn / syntheticIn /
+// gapWidthsIn in the edit core). Both modes show the same clean layout; in
+// edit mode each whitespace-run replacement renders as a NON-EDITABLE span
+// (.flowbrk), so the editable DOM contains only real, offset-exact chars —
+// the caret math (gapWidthsIn/domToDispW) treats run chars as zero-width.
 let flowRuns = null;
-function flowSlice(a, b) {
-  if (editMode) return DATA.text.slice(a, b);
+function flowRunsAll() {
   if (!flowRuns) flowRuns = flowRunsFor(DATA.text);
-  return flowSliceIn(DATA.text, flowRuns, a, b);
+  return flowRuns;
 }
+function flowSlice(a, b) {
+  return flowSliceIn(DATA.text, flowRunsAll(), a, b);
+}
+function flowHtml(a, b) {
+  // escaped flowed html for original text [a,b): non-run text verbatim,
+  // each run replacement wrapped so edit-mode offset math can skip it
+  const frs = flowRunsAll();
+  let lo = 0, hi = frs.length;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (frs[mid].e <= a) lo = mid + 1; else hi = mid; }
+  let out = "", pos = a;
+  for (let i = lo; i < frs.length && frs[i].s < b; i++) {
+    const r = frs[i];
+    if (r.s > pos) out += esc(DATA.text.slice(pos, r.s));
+    if (r.s >= a)
+      out += `<span class="flowbrk" contenteditable="false">${r.rep}</span>`;
+    pos = Math.min(r.e, b);
+  }
+  if (pos < b) out += esc(DATA.text.slice(pos, b));
+  return out;
+}
+// gap-content emitter: view mode = plain flowed text; edit mode = flowed
+// with non-editable run spans
+function flowOut(a, b) { return editMode ? flowHtml(a, b) : esc(flowSlice(a, b)); }
 const syntheticMemo = new Map();
 function syntheticRangesIn(s, e) {
   const key = s + ":" + e;
@@ -780,11 +857,11 @@ function noteWrap(a, b) {
     if (ne <= pos) continue;
     if (ns >= b) break;
     const s = Math.max(ns, pos), e2 = Math.min(ne, b);
-    html += esc(flowSlice(pos, s)) +
-      `<b class="ntetxt">` + esc(flowSlice(s, e2)) + `</b>`;
+    html += flowOut(pos, s) +
+      `<b class="ntetxt">` + flowOut(s, e2) + `</b>`;
     pos = e2;
   }
-  return html + esc(flowSlice(pos, b));
+  return html + flowOut(pos, b);
 }
 function origHtml(gapStart, a, b, emitted, rec, locked) {
   // original text slice [a,b) with nav anchors and locked-span tints.
@@ -818,7 +895,7 @@ function origHtml(gapStart, a, b, emitted, rec, locked) {
         ? `<span class="paranum">${esc(n.num)}</span>` : "";
       html += `<span class="navanchor" contenteditable="false" id="nav-${m.anchor}">${num}</span>`;
     } else {
-      html += `<span class="lockedtxt" contenteditable="false">${esc(flowSlice(m.at, m.lockEnd))}</span>`;
+      html += `<span class="lockedtxt" contenteditable="false">${flowOut(m.at, m.lockEnd)}</span>`;
       pos = m.lockEnd;
     }
   }
@@ -836,7 +913,7 @@ function gapInner(s, e) {
     html += origHtml(s, pos, r.start, emitted, r, locked);
     const id = "ME@" + r.start;
     if (state.view === "redline") {
-      if (r.before) html += `<s class="me" data-me="${esc(id)}">${esc(r.before)}</s>`;
+      if (r.before) html += `<s class="me" data-me="${esc(id)}">${flowOut(r.start, r.end)}</s>`;
       if (r.after) html += `<ins class="me" data-me="${esc(id)}">${esc(r.after)}</ins>`;
     } else if (r.after) {
       html += `<span class="me" data-me="${esc(id)}">${esc(r.after)}</span>`;
@@ -1395,25 +1472,30 @@ function showHint(msg) {
   clearTimeout(hintTimer);
   hintTimer = setTimeout(() => el.classList.remove("show"), 1800);
 }
+// non-editable filler inside gaps: paragraph-number anchors and flowed
+// whitespace-run replacements — both contribute ZERO chars to offset math
+const SKIP_SEL = ".navanchor,.flowbrk";
 function textLenNoAnchors(n) {
   if (n.nodeType === 3)
-    return n.parentElement && n.parentElement.closest(".navanchor")
+    return n.parentElement && n.parentElement.closest(SKIP_SEL)
       ? 0 : n.textContent.length;
-  if (n.classList && n.classList.contains("navanchor")) return 0;
+  if (n.classList && (n.classList.contains("navanchor") ||
+      n.classList.contains("flowbrk"))) return 0;
   let sum = 0;
   for (const c of n.childNodes) sum += textLenNoAnchors(c);
   return sum;
 }
-function gapDisplayText(gapEl) {
-  // the run model's display text for this gap (CRLF preserved — the DOM's
-  // parser-normalized projection of it is what textLenNoAnchors measures)
-  return gapRuns(DATA.text, state.edits, +gapEl.dataset.s, +gapEl.dataset.e)
-    .map(r => r.text).join("");
+function gapWidths(gapEl) {
+  // per-display-char DOM width for this gap under flowed rendering: original
+  // chars inside whitespace runs render as .flowbrk spans (zero-width here);
+  // typed CRLF pairs lose their \r to the HTML parser
+  return gapWidthsIn(DATA.text, state.edits, +gapEl.dataset.s,
+    +gapEl.dataset.e, flowRunsAll());
 }
 function dispOffset(gapEl, node, off) {
-  // display offset of (node, off) within the gap: count DOM chars before the
-  // caret (skipping anchor content), then map DOM->display so \r\n pairs the
-  // parser collapsed to \n count two chars, like the run model expects
+  // display offset of (node, off) within the gap: count editable DOM chars
+  // before the caret (skipping filler spans), then map DOM->display via the
+  // per-char width table so zero-width chars count like the run model expects
   let sum;
   if (node.nodeType !== 3) {
     sum = 0;
@@ -1422,7 +1504,7 @@ function dispOffset(gapEl, node, off) {
     for (let i = 0; i < off && i < el.childNodes.length; i++)
       sum += textLenNoAnchors(el.childNodes[i]);
   } else {
-    if (node.parentElement.closest(".navanchor")) return null;
+    if (node.parentElement.closest(SKIP_SEL)) return null;
     sum = off;
   }
   // add everything before `node` inside the gap
@@ -1433,10 +1515,10 @@ function dispOffset(gapEl, node, off) {
     n2 = n2.parentNode;
     if (!n2) return null;
   }
-  return domToDisp(gapDisplayText(gapEl), sum);
+  return domToDispW(gapWidths(gapEl), sum);
 }
 function setCaretAt(gapEl, disp) {
-  const dom = dispToDom(gapDisplayText(gapEl), disp);
+  const dom = dispToDomW(gapWidths(gapEl), disp);
   const sel = window.getSelection();
   const place = (node, off) => {
     const r = document.createRange();
@@ -1448,7 +1530,7 @@ function setCaretAt(gapEl, disp) {
   const walker = document.createTreeWalker(gapEl, NodeFilter.SHOW_TEXT);
   let n, pos = 0, last = null;
   while ((n = walker.nextNode())) {
-    if (n.parentElement.closest(".navanchor")) continue;
+    if (n.parentElement.closest(SKIP_SEL)) continue;
     const len = n.textContent.length;
     if (dom <= pos + len) { place(n, dom - pos); return; }
     pos += len;
@@ -1485,8 +1567,12 @@ function replaceEditsIn(s, e, recs) {
 }
 function applyDocOp(ctx, op) {
   const before = editsIn(ctx.s, ctx.e);
+  const atomic = flowRunsAll()
+    .filter(r => r.s < ctx.e && r.e > ctx.s)
+    .map(r => [r.s, r.e]);
   const res = applyGapOp(DATA.text, state.edits, ctx.s, ctx.e, op,
-    lockedOrigIn(ctx.s, ctx.e).concat(syntheticRangesIn(ctx.s, ctx.e)));
+    lockedOrigIn(ctx.s, ctx.e).concat(syntheticRangesIn(ctx.s, ctx.e)),
+    atomic);
   if (!res) return;
   if (res.blocked) {
     showHint("That text is locked — brackets are answered from the panel.");
@@ -1565,6 +1651,24 @@ document.addEventListener("keydown", ev => {
   }
   updateProgress();
 });
+// Rebuilding the document changes its height, so a raw rebuild dumps the
+// reader at a different paragraph. Anchor on the first heading/decision in
+// the viewport and restore its screen position after the rebuild.
+function captureScrollAnchor() {
+  const els = document.querySelectorAll("#doc .navanchor[id], #doc mark[id]");
+  for (const el of els) {
+    const r = el.getBoundingClientRect();
+    if (r.top >= 60 && r.top < window.innerHeight) return { id: el.id, top: r.top };
+  }
+  return null;
+}
+function rebuildDocAnchored() {
+  const a = captureScrollAnchor();
+  buildDoc();
+  if (!a) return;
+  const el = document.getElementById(a.id);
+  if (el) window.scrollBy(0, el.getBoundingClientRect().top - a.top);
+}
 document.getElementById("btnEdit").onclick = () => {
   editMode = !editMode;
   if (editMode && state.view !== "redline") {
@@ -1576,7 +1680,7 @@ document.getElementById("btnEdit").onclick = () => {
   const b = document.getElementById("btnEdit");
   b.textContent = "Edit: " + (editMode ? "on" : "off");
   b.classList.toggle("primary", editMode);
-  buildDoc();
+  rebuildDocAnchored();
 };
 
 // ---- profile ----
@@ -1645,7 +1749,7 @@ document.getElementById("btnView").onclick = () => {
   state.view = state.view === "redline" ? "clean" : "redline";
   document.getElementById("btnView").textContent =
     "Redline view: " + (state.view === "redline" ? "on" : "off");
-  save(); buildDoc(); renderPanel(); updateProgress();
+  save(); rebuildDocAnchored(); renderPanel(); updateProgress();
 };
 document.getElementById("btnExport").onclick = () => {
   const uniq = ds.filter(d => !d.duplicate_of && d.safe && !inRemovedTai(d));
