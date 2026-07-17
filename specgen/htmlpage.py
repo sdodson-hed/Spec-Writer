@@ -520,9 +520,18 @@ const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&
 // caret/offset math indexes the exact stream, so reflow must not run there.
 function reflow(s) {
   if (editMode) return s;
-  return s.replace(/(?:[ \t]*\r\n[ \t]*)+/g, function (m) {
-    var n = (m.match(/\r\n/g) || []).length;
-    return n >= 2 ? "\n".repeat(n) : " ";
+  // Consume horizontal space BEFORE each newline but not after the last one,
+  // so a leading indent tab on the next line (e.g. a list-item <ITM> tab)
+  // survives the collapse instead of being swallowed.
+  return s.replace(/(?:[ \t]*\r?\n)+/g, function (run) {
+    // A run holding a <BRK/> break (a lone \n, no \r) is a structural line
+    // break — collapse the whole run (BRKs + file-wrap CRLFs) to ONE break,
+    // so list items stay tight instead of double/triple spaced. A pure-CRLF
+    // run is fixed-width authoring wrap: one CRLF -> space, two-or-more -> a
+    // blank line (a real body paragraph break).
+    if (/(?:^|[^\r])\n/.test(run)) return "\n";
+    var n = (run.match(/\r\n/g) || []).length;
+    return n >= 2 ? "\n\n" : " ";
   });
 }
 const escFlow = s => esc(reflow(s));
@@ -807,6 +816,19 @@ function buildDoc() {
   let html = "", pos = 0;
   const emit = (sp) => {
     const kids = spans.filter(k => k.parent === sp);
+    // Leaf decision: keep the [ ] hugging their content. UFGS wraps a whole
+    // submittal item AND its trailing blank-line spacing in one optional
+    // bracket ("[Concrete Curing Plan<blank lines>]"), which floats the ]
+    // onto a later line. Push whitespace sitting just inside the brackets
+    // outside the mark (still inside the decision span, so keep/delete is
+    // unchanged) so the highlight and the ] hug the item.
+    if (sp.d && kids.length === 0) {
+      const mm = /^(\[)(\s*)([\s\S]*?)(\s*)(\])$/.exec(DATA.text.slice(sp.s, sp.e));
+      if (mm)
+        return escFlow(mm[2]) +
+          `<mark data-id="${sp.d.id}" id="mk-${sp.d.id}">${mm[1]}${escFlow(mm[3])}${mm[5]}</mark>` +
+          escFlow(mm[4]);
+    }
     let inner = "", p = sp.s;
     for (const k of kids) { inner += escFlow(DATA.text.slice(p, k.s)); inner += emit(k); p = k.e; }
     inner += escFlow(DATA.text.slice(p, sp.e));

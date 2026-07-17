@@ -139,7 +139,10 @@ def text_stream(src: str) -> tuple[str, list[int], list[bool]]:
                 else:
                     if name == "NTE":
                         nte_depth += 1
-                    if name == "RTL" and prev_close_rid:
+                    # a two-column reference row (RTL right after RID) or a
+                    # list item (<ITM>) gets a leading tab so it indents under
+                    # its heading instead of sitting flat at the margin
+                    if (name == "RTL" and prev_close_rid) or name == "ITM":
                         chars.append("\t")
                         offs.append(tag_start)
                         mask.append(nte_depth > 0)

@@ -34,6 +34,45 @@ def test_reference_article_is_readable():
     )
 
 
+def test_itm_list_items_are_indented():
+    # <ITM> list items get a leading tab so they sit under their heading
+    text, _, _ = text_stream(
+        "<SEC><LST><SUB>SD-01</SUB></LST><ITM><SUB>Curing Plan</SUB></ITM></SEC>"
+    )
+    assert text == "SD-01\tCuring Plan"
+
+
+def test_optional_submittal_span_covers_trailing_spacing(tmp_path):
+    # UFGS wraps a submittal item AND its trailing blank-line spacing in one
+    # optional bracket; the scanner keeps that whole span (so keep/delete is
+    # correct), and the HTML page trims the whitespace out of the highlight.
+    src = (
+        "<SEC>[<ITM><SUB>Concrete Curing Plan</SUB></ITM><BRK/>\r\n<BRK/>\r\n]"
+        "<ITM><SUB>Quality Control Program</SUB></ITM></SEC>"
+    )
+    groups, text, _ = scan_groups(src)
+    g = groups[0]
+    slice_ = text[g.char_start : g.char_end]
+    assert slice_.startswith("[\tConcrete Curing Plan")
+    assert slice_.endswith("]")
+    # the closing bracket floats past blank lines in the raw span — the page's
+    # mark-trim regex is what pulls it back onto the item's line
+    assert "\n" in slice_[:-1]
+
+
+def test_page_carries_mark_trim(tmp_path):
+    p = tmp_path / "s.SEC"
+    p.write_bytes(
+        b"<SEC>[<ITM><SUB>Curing Plan</SUB></ITM><BRK/>\r\n<BRK/>\r\n]"
+        b"<ITM><SUB>QC Program</SUB></ITM></SEC>"
+    )
+    out = tmp_path / "s.html"
+    write_html(build_manifest(secfile.parse(p)), out)
+    html = out.read_text(encoding="utf-8")
+    # the leaf-decision whitespace-trim path is present
+    assert "/^(\\[)(\\s*)([\\s\\S]*?)(\\s*)(\\])$/" in html
+
+
 def test_inline_rid_gets_no_tab():
     # <RID> used inline in body (space follows in source) must not get a tab
     text, _, _ = text_stream("<SEC><TXT>per <RID>ACI 301</RID> Section 4.</TXT></SEC>")
