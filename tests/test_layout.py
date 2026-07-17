@@ -143,6 +143,39 @@ def test_flow_core_boundary_coherence():
     assert r.returncode == 0, r.stderr or r.stdout
 
 
+def test_note_inside_group_wins_guidance(tmp_path):
+    # a bracketed subsection that carries its own note gets THAT note as
+    # card guidance — not the preceding (unrelated) subsection's note
+    src = (
+        "<SEC><NTE><NPR>NOTE: prev guidance.</NPR></NTE>\r\n"
+        "<TXT>[optional phrase]</TXT>\r\n"
+        "[<SPT><TTL>Surface Finish</TTL><NTE><NPR>NOTE: inner guidance."
+        "</NPR></NTE><TXT>Body text.</TXT></SPT>]</SEC>"
+    )
+    p = tmp_path / "g.SEC"
+    p.write_bytes(src.encode(secfile.ENCODING))
+    m = build_manifest(secfile.parse(p))
+    by_id = {d["id"]: d for d in m["decisions"]}
+    assert by_id["BRK-0001"]["note_guidance"] == "NOTE: prev guidance."
+    assert by_id["BRK-0002"]["note_guidance"] == "NOTE: inner guidance."
+
+
+def test_note_text_bolded_inside_marks(tmp_path):
+    p = tmp_path / "g.SEC"
+    p.write_bytes(
+        ("<SEC>[<SPT><TTL>T</TTL><NTE><NPR>NOTE: inner.</NPR></NTE>"
+         "<TXT>Body.</TXT></SPT>]</SEC>").encode(secfile.ENCODING)
+    )
+    out = tmp_path / "g.html"
+    write_html(build_manifest(secfile.parse(p)), out)
+    html = out.read_text(encoding="utf-8")
+    assert "function noteBoldHtml(a, b)" in html
+    # both render paths use it: build-time emit and update-time updateMark
+    assert "${mp.coreHtml}</mark>" in html
+    um = html.split("function updateMark")[1].split("\nfunction ")[0]
+    assert "coreHtml" in um and "noteBoldHtml" in um
+
+
 def test_manual_edit_on_synthetic_char_rejected(tmp_path):
     # deleting a <BRK/>-synthesized newline passes the contiguity check
     # (single char) but would splice into the tag's '<' — generate must

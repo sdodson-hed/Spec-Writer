@@ -149,10 +149,24 @@ def build_manifest(sec: SecFile) -> dict:
         (s.src_end, _WS_RE.sub(" ", s.text()).strip()) for s in root.iter("SUB")
     ]
     sub_spans.sort()
-    note_ends = sorted(
-        (nte.src_end, _WS_RE.sub(" ", nte.text()).strip()[:1500])
+    note_spans_src = sorted(
+        (nte.src_start, nte.src_end, _WS_RE.sub(" ", nte.text()).strip()[:1500])
         for nte in root.iter("NTE")
     )
+
+    def _guidance(g) -> str:
+        # A bracketed subsection carries its own note INSIDE the group span
+        # ("[<SPT><TTL>…</TTL><NTE>NOTE: Include when…</NTE>…]") — that note
+        # is the decision's instruction, so it wins. Only when the group
+        # contains no note does the nearest PRECEDING note apply (the usual
+        # "note, then the bracketed text it governs" layout).
+        for s2, e2, t in note_spans_src:
+            if g.src_start <= s2 and e2 <= g.src_end:
+                return t
+        return next(
+            (t for _s2, e2, t in reversed(note_spans_src) if e2 <= g.src_start),
+            "",
+        )
     decisions = []
     for g in groups:
         in_note = g.in_note
@@ -208,9 +222,7 @@ def build_manifest(sec: SecFile) -> dict:
                 "offset": g.src_start,
                 "char_start": g.char_start,
                 "char_end": g.char_end,
-                "note_guidance": next(
-                    (t for e, t in reversed(note_ends) if e <= g.src_start), ""
-                ),
+                "note_guidance": _guidance(g),
             }
         )
 

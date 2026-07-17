@@ -659,11 +659,26 @@ function syntheticRangesIn(s, e) {
 // keep/delete still removes item + spacing together). Shared by the initial
 // build (emit) and every later mark refresh (updateMark), so the layout
 // survives interaction.
+function noteBoldHtml(a, b) {
+  // escaped flowed html of [a,b) with designer-note ranges bolded — the
+  // "this part is guidance, not spec text" cue holds inside marks too
+  let out = "", pos = a;
+  for (const [ns, ne] of DATA.note_spans || []) {
+    if (ne <= pos) continue;
+    if (ns >= b) break;
+    const s = Math.max(ns, pos), e2 = Math.min(ne, b);
+    out += esc(flowSlice(pos, s)) +
+      `<b class="ntetxt">` + esc(flowSlice(s, e2)) + `</b>`;
+    pos = e2;
+  }
+  return out + esc(flowSlice(pos, b));
+}
 function markParts(s, e) {
   const mm = /^(\[)(\s*)([\s\S]*?)(\s*)(\])$/.exec(DATA.text.slice(s, e));
   if (!mm) return null;
   const a = s + 1, b = a + mm[2].length, c = b + mm[3].length, d = c + mm[4].length;
   return { pre: flowSlice(a, b), core: "[" + flowSlice(b, c) + "]",
+           coreHtml: "[" + noteBoldHtml(b, c) + "]",
            post: flowSlice(c, d) };
 }
 __EDIT_CORE__
@@ -957,12 +972,12 @@ function buildDoc() {
       const mp = markParts(sp.s, sp.e);
       if (mp)
         return esc(mp.pre) +
-          `<mark data-id="${sp.d.id}" id="mk-${sp.d.id}">${esc(mp.core)}</mark>` +
+          `<mark data-id="${sp.d.id}" id="mk-${sp.d.id}">${mp.coreHtml}</mark>` +
           esc(mp.post);
     }
     let inner = "", p = sp.s;
-    for (const k of kids) { inner += esc(flowSlice(p, k.s)); inner += emit(k); p = k.e; }
-    inner += esc(flowSlice(p, sp.e));
+    for (const k of kids) { inner += noteBoldHtml(p, k.s); inner += emit(k); p = k.e; }
+    inner += noteBoldHtml(p, sp.e);
     if (sp.d) return `<mark data-id="${sp.d.id}" id="mk-${sp.d.id}">${inner}</mark>`;
     if (sp.tai) {
       const n = sp.e - sp.s;
@@ -1050,11 +1065,12 @@ function updateMark(d) {
   if (d.id === activeId) cls.push("active");
   if (!e.a) {
     cls.push("todo");
-    // reproduce the build-time rendering (trimmed brackets + reflow): a raw
-    // slice here would resurrect the CRLF jank — and DUPLICATE the
-    // whitespace emit() moved outside the mark — on the first interaction
+    // reproduce the build-time rendering (trimmed brackets + reflow + bold
+    // note ranges): a raw slice here would resurrect the CRLF jank — and
+    // DUPLICATE the whitespace emit() moved outside the mark — on the
+    // first interaction
     const mp = markParts(d.char_start, d.char_end);
-    m.textContent = mp ? mp.core : flowSlice(d.char_start, d.char_end);
+    m.innerHTML = mp ? mp.coreHtml : noteBoldHtml(d.char_start, d.char_end);
     m.title = "click to answer";
   } else if (pendingFills(d)) {
     // option picked but nested blanks unfilled: render the picked text so
