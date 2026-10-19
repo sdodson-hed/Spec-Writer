@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import re
 import xml.etree.ElementTree as ET
+from collections import Counter
 from pathlib import Path
 
 from . import secfile
@@ -47,7 +48,7 @@ class GenerateError(Exception):
 def _strip_revisions(source: str, drop: str, unwrap: str) -> str:
     """Serialize with <drop> elements removed and <unwrap> elements replaced
     by their children. Both are only ever wrapped around balanced spans."""
-    sec = secfile.parse_source(source)
+    sec = secfile.parse_source(source, tolerant=True)
 
     def emit(node) -> str:
         if not isinstance(node, secfile.Element):
@@ -65,6 +66,26 @@ def _strip_revisions(source: str, drop: str, unwrap: str) -> str:
     parts.append(emit(sec.root))
     parts.extend(n.serialize() for n in sec.epilog)
     return "".join(parts)
+
+
+def _check_well_formed(
+    sec: secfile.SecFile, master_defects: list[dict], what: str
+) -> None:
+    """Well-formed XML check that tolerates the master's own source defects
+    (tolerant-parse stray close tags) and nothing else. The output may carry
+    fewer defects (a removed block can take one with it), never a new one."""
+    allowed = Counter(d["raw"] for d in master_defects)
+    found = Counter(d["raw"] for d in sec.defects)
+    if found - allowed:
+        raise GenerateError(
+            f"internal error: {what} has source defects the master does not: "
+            f"{sorted((found - allowed).elements())}"
+        )
+    text = sec.source
+    for d in sorted(sec.defects, key=lambda d: -d["offset"]):
+        off, raw = d["offset"], d["raw"]
+        text = text[:off] + " " * len(raw) + text[off + len(raw) :]
+    ET.fromstring(text.encode(secfile.ENCODING))  # raises if not well-formed
 
 
 def resolve_revisions(source: str) -> str:
@@ -202,7 +223,8 @@ def generate(
     force_stale: bool = False,
 ) -> dict:
     master = Path(master)
-    src = secfile.parse(master).source
+    master_sec = secfile.parse(master, tolerant=True)
+    src = master_sec.source
     # Stale-answers gate (issue #23): the answer file carries the
     # fingerprint of the scan it was recorded against; if this master's
     # scan differs, every BRK id may point at a DIFFERENT bracket, so
@@ -464,7 +486,7 @@ def generate(
         tmp = master.parent / (master.name + ".gen.tmp")
         while True:
             tmp.write_bytes(src.encode(secfile.ENCODING))
-            tree = secfile.parse(tmp)
+            tree = secfile.parse(tmp, tolerant=True)
             spans = [
                 (t.src_start, t.src_end, t.attrs.get("OPT", ""))
                 for t in tree.root.iter("TAI")
@@ -495,7 +517,7 @@ def generate(
             if revisions:
                 rtmp = master.parent / (master.name + ".rev.tmp")
                 rtmp.write_bytes(rev.encode(secfile.ENCODING))
-                rtree = secfile.parse(rtmp)
+                rtree = secfile.parse(rtmp, tolerant=True)
                 rspans = [
                     (t.src_start, t.src_end)
                     for t in rtree.root.iter("TAI")
@@ -518,7 +540,7 @@ def generate(
         drop = "ENG" if units == "si" else "MET"
         tmp = master.parent / (master.name + ".gen.tmp")
         tmp.write_bytes(src.encode(secfile.ENCODING))
-        tree = secfile.parse(tmp)
+        tree = secfile.parse(tmp, tolerant=True)
         spans = sorted(
             (
                 (el.src_start, el.src_end)
@@ -534,7 +556,7 @@ def generate(
         if revisions:
             rtmp = master.parent / (master.name + ".rev.tmp")
             rtmp.write_bytes(rev.encode(secfile.ENCODING))
-            rtree = secfile.parse(rtmp)
+            rtree = secfile.parse(rtmp, tolerant=True)
             rspans = sorted(
                 (
                     (el.src_start, el.src_end)
@@ -602,10 +624,10 @@ def generate(
     out_sec.parent.mkdir(parents=True, exist_ok=True)
     tmp = out_sec.with_suffix(out_sec.suffix + ".tmp")
     tmp.write_bytes(src.encode(secfile.ENCODING))
-    parsed = secfile.parse(tmp)
+    parsed = secfile.parse(tmp, tolerant=True)
     if not parsed.roundtrips():
         raise GenerateError("internal error: output does not round-trip")
-    ET.parse(tmp)  # raises if not well-formed
+    _check_well_formed(parsed, master_sec.defects, "output")
     tmp.replace(out_sec)
 
     summary = {
@@ -618,17 +640,21 @@ def generate(
         "tailoring_blocks_removed": removed_tai,
         "units_removed": removed_units,
         "bracket_chars_remaining": src.count("[") + src.count("]"),
+        "source_defects": len(master_sec.defects),
     }
 
     if revisions:
-        original = secfile.parse(master).source
+        original = master_sec.source
         if resolve_revisions(rev) != src:
             raise GenerateError("revisions do not resolve to the clean output")
         if revert_revisions(rev) != original:
             raise GenerateError("revisions do not revert to the master")
+        _check_well_formed(
+            secfile.parse_source(rev, tolerant=True), master_sec.defects,
+            "revisions output",
+        )
         rev_path = out_sec.with_suffix(".revisions.sec")
         rev_path.write_bytes(rev.encode(secfile.ENCODING))
-        ET.parse(rev_path)  # well-formed
         summary["revisions_output"] = str(rev_path)
 
     out_sec.with_suffix(".redline.json").write_text(

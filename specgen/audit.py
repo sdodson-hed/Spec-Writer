@@ -16,7 +16,9 @@ from .secfile import Element
 _UNDERSCORE_RE = re.compile(r"_{3,}")
 
 
-def audit_source(src: str, root: Element) -> dict:
+def audit_source(src: str, root: Element, defects=()) -> dict:
+    """`defects` are tolerant-parse source defects (SecFile.defects). They
+    are reported, never counted as a clean pass."""
     groups, text, offs = scan_groups(src)
     _, _, mask = text_stream(src)
     signals: dict[str, dict[str, int]] = {}
@@ -93,11 +95,18 @@ def audit_source(src: str, root: Element) -> dict:
         # is bracket-free; none correspond to an unbalanced/missed bracket
         # idiom — those would already surface as a stray-bracket unknown.)
         tally("submittal-classification", "excluded:fixed-classification")
-    return {"signals": signals, "unknowns": unknowns}
+
+    # 6. source defects the tolerant parser kept as raw text
+    reported = []
+    for d in defects:
+        off = d["offset"]
+        context = re.sub(r"\s+", " ", src[max(0, off - 80) : off + 40]).strip()
+        reported.append({**d, "context": context})
+    return {"signals": signals, "unknowns": unknowns, "defects": reported}
 
 
-def audit_file(path) -> dict:
+def audit_file(path, tolerant: bool = True) -> dict:
     from . import secfile
 
-    sec = secfile.parse(path)
-    return audit_source(sec.source, sec.root)
+    sec = secfile.parse(path, tolerant=tolerant)
+    return audit_source(sec.source, sec.root, sec.defects)
