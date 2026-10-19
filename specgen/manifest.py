@@ -73,7 +73,7 @@ class _LocSpan:
     num: str = ""
 
 
-def _location_index(root: Element) -> list[_LocSpan]:
+def location_index(root: Element) -> list[_LocSpan]:
     """Source spans of PRT/SPT (with titles and positionally-computed numbers).
 
     Real masters carry no numbering attributes on PRT/SPT — SI's own Navigate
@@ -121,7 +121,7 @@ def _locate(locs: list[_LocSpan], offset: int) -> str:
 def build_manifest(sec: SecFile) -> dict:
     root = sec.root
     groups, stream, _offs = scan_groups(sec.source)
-    locs = _location_index(root)
+    locs = location_index(root)
     nav = [
         {
             "num": s.num,
