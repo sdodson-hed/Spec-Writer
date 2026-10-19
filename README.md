@@ -18,6 +18,11 @@ tailoring option, submittal, and reference a section demands of a specifier.
   positional `BRK-NNNN` ids, so they survive quarterly UFGS releases and
   CRLF/LF differences. Answers made on 03 30 00 (April 2026) carry 236 of
   244 decisions to the July 2026 copy; the other 8 are reported, not applied.
+- Subsection decisions: every `<SPT>` (40,965 across the WBDG release) can be
+  kept or removed, with the same guarantees as bracket decisions. Removing
+  every 5th subsection in all 430 well-formed WBDG masters passes generate's
+  verification. Maxwell 23 64 10 with the 7 rule-based removals goes from
+  102 to 65 unresolved decisions.
 - Additive bracket lists: choice groups that are select-any lists
   ("[ single pole][, double pole][, and four-way]") render as checkboxes;
   connector-only spans ("[ or ]") are joiners, never options; kept items
@@ -88,6 +93,21 @@ applied to nothing. Older answer files keyed on `BRK-NNNN` still load when
 their fingerprint matches this master. `--strict` turns any non-resolving
 answer or fingerprint mismatch into a hard stop.
 
+Subsections. Every `<SPT>` is also a keep/remove decision (manifest
+`subsections`, anchor `<path>#spt:<hash8>`, workbook Subsections sheet,
+keep/remove buttons on the page's outline). `remove` deletes the whole
+subsection, its children and every decision inside it; the page drops those
+decisions from the counter and collapses the text. An unanswered subsection
+is kept: the one place a missing answer has a meaning, because UFGS masters
+are written "everything present until removed". `.redline.json` logs it as
+`kept by default` with `source: default`, so a reviewer can tell it from a
+deliberate keep. A subsection that is the whole content of an optional
+bracket (`[<SPT>...</SPT>]`) is the same decision as that bracket; answering
+either sets both, and disagreeing answers are reported and neither applied.
+Removed subsections appear as `<DEL>` blocks in `.revisions.sec`. Submittal
+items and references used only inside a removed subsection are not cleaned
+up yet (work order step 4).
+
 Shared-drive workflow: `build_project.py` sets up a per-project layout
 (`decisions/`, `answers/`, `generated/`, `index.html`) that organizes manifests,
 filled-in answers, and generated outputs. Export from the HTML or Excel
@@ -100,7 +120,10 @@ tools.
 
 Demo: `python scripts/maxwell_demo.py` fills the 23 64 10 workbook with the
 Maxwell AFB values (air-cooled, electric drive, scroll, Air Force tailoring)
-and the `generate` run above produces the draft section.
+and removes the 7 subsections the ACC-1 schedule rules out (centrifugal,
+split-system, screw and centrifugal compressors, gas-engine driver,
+water-cooled condenser coil, cooling tower); the `generate` run above
+produces the draft section.
 
 ## Layout
 

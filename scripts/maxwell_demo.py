@@ -76,6 +76,34 @@ for row in ps.iter_rows(min_row=2):
     if row[0].value in profile:
         row[3].value = profile[row[0].value]
 
+# Subsections removed by rule from the ACC-1 schedule (air-cooled scroll,
+# electric drive): the "Rule" rows of the Maxwell table in
+# docs/superpowers/specs/2026-10-13-design-data-annotations-design.md.
+# The spec's "Confirm" rows (2.4.3-2.4.7, 2.6.14, 2.7.4) wait for an
+# engineer's sign-off and stay unanswered. Matched by number AND title, so a
+# renumbered master fails here instead of removing the wrong subsection.
+REMOVE = {
+    "2.4.2": "Centrifugal Type Water Chiller",      # compressor type is scroll
+    "2.5": "SPLIT-SYSTEM WATER CHILLER",            # packaged air-cooled unit
+    "2.6.5.2": "Rotary Screw Compressor",
+    "2.6.5.3": "Centrifugal Compressor",
+    "2.6.7": "Compressor Driver, Gas-Engine",       # electric drive
+    "2.6.11": "Water-Cooled Condenser Coil",        # condenser = air-cooled
+    "2.10.3": "Cooling Tower",                      # condenser = air-cooled
+}
+ss = wb["Subsections"]
+shead = {str(c.value).strip().lower(): i for i, c in enumerate(ss[1]) if c.value}
+found = set()
+for row in ss.iter_rows(min_row=2):
+    num = row[shead["number"]].value
+    if num in REMOVE:
+        title = str(row[shead["title"]].value).strip()
+        assert title.startswith(REMOVE[num]), (num, title)
+        row[shead["action"]].value = "remove"
+        found.add(num)
+assert found == set(REMOVE), sorted(set(REMOVE) - found)
+print(f"Removing {len(found)} subsections by rule: {', '.join(sorted(found))}")
+
 target = FILLED
 try:
     wb.save(str(target))
