@@ -20,7 +20,7 @@ import bisect
 import re
 from dataclasses import dataclass
 
-from .anchors import assign_anchors
+from .anchors import assign_anchors, assign_spt_anchors, spt_ids
 from .scan import (
     connector_word,
     context_excerpt,
@@ -72,6 +72,7 @@ class _LocSpan:
     title: str
     depth: int
     num: str = ""
+    name: str = ""  # PRT or SPT
 
 
 def location_index(root: Element) -> list[_LocSpan]:
@@ -104,7 +105,8 @@ def location_index(root: Element) -> list[_LocSpan]:
                 if depth == 0:
                     title = _PART_TITLE_STRIP_RE.sub("", title)
                 locs.append(
-                    _LocSpan(child.src_start, child.src_end, title, depth, num)
+                    _LocSpan(child.src_start, child.src_end, title, depth, num,
+                             child.name)
                 )
                 walk(child, depth + 1, child_prefix, [0])
             else:
@@ -112,6 +114,52 @@ def location_index(root: Element) -> list[_LocSpan]:
 
     walk(root, 0, "", [0])
     return locs
+
+
+def _subsections(sec: SecFile, locs: list[_LocSpan], groups, offs) -> list[dict]:
+    """Every <SPT> as a keep/remove decision (spec 2026-10-13, section 3).
+
+    governed_by: the subsection is the whole content of a one-option
+    optional bracket ("[<SPT>...</SPT>]"), so that bracket decision already
+    keeps or removes exactly this text; the page and generate treat the two
+    as one decision. in_bracket: innermost enclosing bracket group, governed
+    or not. tailoring: OPT of the innermost enclosing <TAI>."""
+    src = sec.source
+    anchors = assign_spt_anchors(locs)
+    tais = sorted(
+        ((t.src_start, t.src_end, t.attrs.get("OPT", "?")) for t in sec.root.iter("TAI")),
+        key=lambda t: t[1] - t[0],
+    )
+    out: list[dict] = []
+    open_spts: list[tuple[int, str]] = []  # (end, id) stack of enclosing SPTs
+    for sid, s in spt_ids(locs):
+        while open_spts and open_spts[-1][0] <= s.start:
+            open_spts.pop()
+        enclosing = [g for g in groups if g.src_start < s.start and s.end <= g.src_end]
+        inner = min(enclosing, key=lambda g: g.src_end - g.src_start, default=None)
+        governed = None
+        if inner is not None and inner.kind == "optional" and len(inner.options) == 1:
+            o = inner.options[0]
+            if not src[o.src_start : s.start].strip() and not src[s.end : o.src_end].strip():
+                governed = inner.gid
+        tai = next((opt for a, b, opt in tais if a <= s.start and s.end <= b), None)
+        out.append(
+            {
+                "id": sid,
+                "anchor": anchors[sid],
+                "num": s.num,
+                "title": s.title,
+                "depth": s.depth,
+                "parent": open_spts[-1][1] if open_spts else None,
+                "src": [s.start, s.end],
+                "span": [bisect.bisect_left(offs, s.start), bisect.bisect_left(offs, s.end)],
+                "governed_by": governed,
+                "in_bracket": inner.gid if inner is not None else None,
+                "tailoring": tai,
+            }
+        )
+        open_spts.append((s.end, sid))
+    return out
 
 
 def _locate(locs: list[_LocSpan], offset: int) -> str:
@@ -356,6 +404,8 @@ def build_manifest(sec: SecFile) -> dict:
 
     _walk_units(root)
 
+    subsections = _subsections(sec, locs, groups, _offs)
+
     return {
         "section": _WS_RE.sub(" ", scn.text()).strip() if scn is not None else "?",
         "title": _WS_RE.sub(" ", stl.text()).strip() if stl is not None else "?",
@@ -376,12 +426,16 @@ def build_manifest(sec: SecFile) -> dict:
             "references_declared_but_unused": sorted(declared_ids - used_ids),
             "references_used_but_undeclared": sorted(used_ids - declared_ids),
             "unit_pairs": len(unit_spans),
+            "subsections": len(subsections),
         },
         "tailoring_options": {
             k: v for k, v in sorted(tai_counts.items(), key=lambda kv: -kv[1]["chars"])
         },
         "tailoring_spans": tailoring_spans,
         "decisions": decisions,
+        # keep/remove structural decisions; separate from bracket decisions
+        # so their ids, counts and the unanswered gate are unaffected
+        "subsections": subsections,
         "submittals": submittal_items,
         "references": declared,
         "unit_spans": unit_spans,
