@@ -41,7 +41,8 @@ python -m specgen generate  "masters/23 64 10.SEC" \
     --answers out/answers.xlsx -o out/generated/23_64_10.sec   # or .json
 python -m specgen audit     "masters/23 64 10.SEC"               # completeness gate
 python -m specgen generate  ... --revisions   # also emit .revisions.sec (SI tracked changes)
-python scripts/audit_corpus.py                # audit + round-trip all 56 masters
+python scripts/audit_corpus.py [corpus_dir]   # audit + round-trip every .SEC under a dir
+                                              # (default $SPECGEN_CORPUS, else masters/Specifications)
 python scripts/build_project.py <dir> <masters...>   # per-project batch + index
 ```
 
