@@ -31,6 +31,7 @@ from .scan import (
     is_additive,
     is_connector,
     is_plural,
+    legacy_scan_fingerprint,
     scan_fingerprint,
     scan_groups,
     strip_connector,
@@ -206,10 +207,12 @@ def generate(
     # fingerprint of the scan it was recorded against; if this master's
     # scan differs, every BRK id may point at a DIFFERENT bracket, so
     # applying would silently write the wrong spec.
-    expected = scan_fingerprint(scan_groups(src)[0])
+    groups0 = scan_groups(src)[0]
+    expected = scan_fingerprint(groups0)
+    legacy = legacy_scan_fingerprint(groups0)
     fp_status = "unstamped"
     if fingerprint:
-        if fingerprint != expected and not force_stale:
+        if fingerprint not in (expected, legacy) and not force_stale:
             raise GenerateError(
                 f"answers were recorded against a different scan of this "
                 f"section (answers fingerprint {fingerprint}, master scan "
@@ -218,7 +221,11 @@ def generate(
                 f"workbook built from THIS master and re-export, or pass "
                 f"--force to apply anyway"
             )
-        fp_status = "match" if fingerprint == expected else "MISMATCH (forced)"
+        fp_status = (
+            "match" if fingerprint == expected
+            else "match (legacy)" if fingerprint == legacy
+            else "MISMATCH (forced)"
+        )
     if revisions and re.search(r"<(?:DEL|ADD)[\s>/]", src):
         raise GenerateError(
             "master already contains <DEL>/<ADD> revision markup; "
