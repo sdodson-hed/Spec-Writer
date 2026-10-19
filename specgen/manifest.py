@@ -162,6 +162,12 @@ def _subsections(sec: SecFile, locs: list[_LocSpan], groups, offs) -> list[dict]
     return out
 
 
+def section_subsections(sec: SecFile) -> list[dict]:
+    """The manifest's subsections list without building the whole manifest."""
+    groups, _text, offs = scan_groups(sec.source)
+    return _subsections(sec, location_index(sec.root), groups, offs)
+
+
 def _locate(locs: list[_LocSpan], offset: int) -> str:
     chain = [s.title for s in locs if s.start <= offset < s.end]
     return " > ".join(chain) if chain else "(header)"

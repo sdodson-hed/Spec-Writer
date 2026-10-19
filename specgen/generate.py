@@ -25,6 +25,7 @@ from . import secfile
 from .anchors import section_anchors
 from .answers import PLURAL_KEY, UNITS_KEY, resolve_answer_keys
 from .errors import GenerateError  # noqa: F401  (re-exported for callers)
+from .manifest import section_subsections
 from .scan import (
     additive_join,
     connector_runs,
@@ -226,10 +227,15 @@ def generate(
     # (orphans are reported, applied to nothing); BRK keys still go through
     # the stale-fingerprint gate (issue #23). See answers.resolve_answer_keys.
     groups0 = scan_groups(src)[0]
+    subsections = section_subsections(master_sec)
     answers, orphans, fp_status = resolve_answer_keys(
         answers, groups0, section_anchors(master_sec), fingerprint,
-        force_stale=force_stale, strict=strict,
+        force_stale=force_stale, strict=strict, subsections=subsections,
     )
+    # subsection keep/remove answers (SPT-NNNN); governed ones were already
+    # turned into their bracket's answer by resolve_answer_keys
+    spt_answers = {k: v for k, v in answers.items() if k.startswith("SPT-")}
+    answers = {k: v for k, v in answers.items() if not k.startswith("SPT-")}
     if revisions and re.search(r"<(?:DEL|ADD)[\s>/]", src):
         raise GenerateError(
             "master already contains <DEL>/<ADD> revision markup; "
@@ -339,6 +345,7 @@ def generate(
         propagated = ""
         if (
             not entry.get("answer")
+            and not entry.get("conflict")  # a conflict is never filled in
             and g.gid in dups
             and dups[g.gid] in bracket_answers
         ):
@@ -359,13 +366,10 @@ def generate(
         if not ans or (
             low == "keep" and g.kind not in ("optional", "submittal-review")
         ):
-            unresolved.append(
-                {
-                    "id": g.gid,
-                    "kind": g.kind,
-                    "options": [o.text for o in g.options],
-                }
-            )
+            u = {"id": g.gid, "kind": g.kind, "options": [o.text for o in g.options]}
+            if entry.get("conflict"):
+                u["note"] = entry["conflict"]
+            unresolved.append(u)
             continue
 
         if not g.safe:
@@ -445,6 +449,8 @@ def generate(
         src = src[: g.src_start] + after + src[g.src_end :]
         if propagated:
             action += f" (propagated from {propagated})"
+        if entry.get("via"):  # answered on its governed subsection row
+            action += f" (via {entry['via']})"
         redline.append(
             {
                 "id": g.gid,
@@ -619,6 +625,7 @@ def generate(
         "answers_fingerprint": fp_status,
         "answers_carried": len(bracket_answers),
         "answers_orphaned": len(orphans),
+        "subsections_answered": len(spt_answers),
         "decisions_total": len(groups),
         "resolved": len([r for r in redline if r["kind"] != "tailoring"]),
         "unresolved": len(unresolved),
