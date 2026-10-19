@@ -1,0 +1,38 @@
+{
+  "schema": "specgen.design-data/1",
+  "project": { "name": "Maxwell AFB", "agency": "AIR FORCE", "units": "IP" },
+  "sources": {
+    "acc-sched-35": {
+      "kind": "schedule",
+      "title": "Air Cooled Chiller Schedule",
+      "phase": "35%",
+      "date": "2026-10-13"
+    }
+  },
+  "equipment": [
+    {
+      "mark": "ACC-1",
+      "schedule": "air_cooled_chiller",
+      "source": "acc-sched-35",
+      "type": "AIR-COOLED SCROLL",
+      "nominal_tonnage": 100,
+      "capacity_mbh": 1123.1,
+      "eer": 9.98,
+      "outside_air_temp_f": 95,
+      "refrigerant": "R-454B",
+      "refrigerant_circuits": 2,
+      "compressor_type": "SCROLL",
+      "compressor_qty": 4,
+      "condenser_fan_qty": 8,
+      "weight_lbs": 10136,
+      "volts": 208,
+      "phase": 3,
+      "hz": 60,
+      "mca": 474,
+      "mop": 600,
+      "sccr": 65000,
+      "notes": ""
+    }
+  ],
+  "bod": {}
+}
