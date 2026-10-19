@@ -21,6 +21,37 @@ from pathlib import Path
 
 from .answers import PLURAL_KEY, UNITS_KEY
 
+# Pure subsection helpers (keep/remove decisions, spec 2026-10-13 sec. 3).
+# DOM-free so tests/test_subsection_js.py runs them under Node. Injected into
+# _TEMPLATE at __STRUCT_CORE__.
+STRUCT_CORE_JS = r"""
+// ---- subsection core (pure; no DOM, no globals) ----
+// subs: manifest subsections in document order (parents before children).
+// spt: {id: "keep"|"remove"} answers for non-governed subsections.
+// brkAnswer(id) -> answer string of a bracket decision ("" if none).
+// A governed subsection ("[<SPT>...</SPT>]") follows its bracket: removed
+// exactly when that bracket is answered delete. Children go with a parent.
+function removedSubsections(subs, spt, brkAnswer) {
+  const out = new Set();
+  for (const s of subs) {
+    const own = s.governed_by
+      ? String(brkAnswer(s.governed_by) || "").trim().toLowerCase() === "delete"
+      : spt[s.id] === "remove";
+    if (own || (s.parent && out.has(s.parent))) out.add(s.id);
+  }
+  return out;
+}
+// Removed subsections that render as one collapsed block: parent not
+// removed, and not governed (a governed one renders through its bracket).
+function removedRoots(subs, removed) {
+  return subs.filter(s => removed.has(s.id) && !(s.parent && removed.has(s.parent))
+    && !s.governed_by);
+}
+function insideAny(a, b, spans) {
+  return spans.some(([s, e]) => s <= a && b <= e);
+}
+"""
+
 # Pure edit-core: the run model behind inline editing. DOM-free by design so
 # it is unit-testable under Node (tests/test_edit_core.py). Injected into
 # _TEMPLATE at __EDIT_CORE__.
@@ -453,6 +484,18 @@ button.primary { background: var(--accent); color: var(--accent-ink); border-col
 #doc mark s.fold { cursor: pointer; font-style: italic; }
 #doc s.unitcut { color: var(--del-ink); background: var(--del); text-decoration: line-through; }
 #doc mark.taicut { cursor: pointer; }
+#doc mark.sptcut { cursor: pointer; }
+#doc s.sptcut.open { color: var(--del-ink); background: var(--del); cursor: pointer; }
+.navact { margin-left: auto; flex: none; display: none; gap: 2px; }
+.navrow2:hover .navact, .navrow2.sptrm .navact, .navact:has(button.on) { display: inline-flex; }
+.navact button { font-size: 10.5px; padding: 0 5px; border: 1px solid var(--line, #ccc);
+  border-radius: 4px; background: transparent; color: inherit; cursor: pointer; }
+.navact button.dflt { opacity: .55; font-style: italic; }
+.navact button.on[data-spt-act="keep"] { background: var(--done); color: var(--done-ink); }
+.navact button.on[data-spt-act="remove"] { background: var(--del); color: var(--del-ink); }
+.navrow2.sptrm .navttl { text-decoration: line-through; color: var(--del-ink); }
+.navrow2.sptunder { opacity: .45; }
+.navrow2.sptunder .navttl { text-decoration: line-through; }
 #doc s.me { color: var(--del-ink); background: var(--del);
   text-decoration: line-through; cursor: pointer; border-radius: 3px; }
 #doc ins.me { color: var(--done-ink); background: var(--done);
@@ -482,7 +525,7 @@ button.primary { background: var(--accent); color: var(--accent-ink); border-col
 .navrow2.active .navtwist { color: var(--accent-ink); }
 .navnum { color: var(--muted); font-weight: 600; flex: none; min-width: 34px; }
 .navrow2.active .navnum { color: var(--accent-ink); }
-.navttl { overflow: hidden; text-overflow: ellipsis; }
+.navttl { overflow: hidden; text-overflow: ellipsis; min-width: 4em; flex: 1 1 auto; }
 .navanchor { scroll-margin-top: 80px; }
 .paranum { font-weight: 700; margin-right: 8px; }
 .navall { font-size: 12px; color: var(--muted); padding: 0 8px 8px; }
@@ -682,6 +725,34 @@ function markParts(s, e) {
            post: flowSlice(c, d) };
 }
 __EDIT_CORE__
+__STRUCT_CORE__
+// ---- subsection keep/remove (state.spt holds non-governed answers; a
+// governed subsection reads and writes its bracket's answer) ----
+state.spt = state.spt || {};
+const SUBS = DATA.subsections || [];
+const subById = Object.fromEntries(SUBS.map(s => [s.id, s]));
+const subByAnchor = Object.fromEntries(SUBS.map(s => [s.anchor, s]));
+const brkAnswerOf = id => ((state.answers[id] || {}).answer || "");
+const removedSet = () => removedSubsections(SUBS, state.spt, brkAnswerOf);
+const removedSpans = () => { const rm = removedSet(); return SUBS.filter(s => rm.has(s.id)).map(s => s.span); };
+function sptValue(s) {
+  if (!s.governed_by) return state.spt[s.id] || "";
+  const a = brkAnswerOf(s.governed_by).trim().toLowerCase();
+  return a === "delete" ? "remove" : a === "keep" ? "keep" : "";
+}
+function setSpt(sid, v) {
+  const s = subById[sid];
+  if (s.governed_by) {
+    const cur = state.answers[s.governed_by] || {};
+    const want = v === "remove" ? "delete" : "keep";
+    if ((cur.answer || "").toLowerCase() === want) delete cur.answer; else cur.answer = want;
+    if (cur.answer || cur.notes) state.answers[s.governed_by] = cur;
+    else delete state.answers[s.governed_by];
+  } else if (state.spt[sid] === v) delete state.spt[sid];
+  else state.spt[sid] = v;
+  save(); buildDoc(); renderNav(); refresh();
+}
+let sptOpen = new Set();  // collapsed removed blocks the reader expanded
 let dirty = false;
 const save = () => { dirty = true; localStorage.setItem(KEY, JSON.stringify(state)); };
 // after ds/byId: pruneStaleEdits -> meConflict reads ds and the profile
@@ -796,6 +867,8 @@ function activeSpans() {
     if (names.every(nm => state.profile[nm] === "remove"))
       spans.push({ s: t.span[0], e: t.span[1], pri: 2, tai: t.opt });
   }
+  for (const s of removedRoots(SUBS, removedSet()))
+    spans.push({ s: s.span[0], e: s.span[1], pri: 2, spt: s });
   const u = state.profile[UNITS_KEY];
   if (u === "si" || u === "ip")
     for (const pr of DATA.unit_spans || []) {
@@ -823,6 +896,11 @@ function inRemovedTai(d) {
     t.span[0] <= d.char_start && d.char_end <= t.span[1] &&
     t.opt.split(",").map(x => x.trim()).every(nm => state.profile[nm] === "remove"));
 }
+// a decision inside removed tailoring or a removed subsection is not asked
+// for: it leaves the counter, the next-unanswered walk and the export gate
+function inRemoved(d) {
+  return inRemovedTai(d) || insideAny(d.char_start, d.char_end, removedSpans());
+}
 
 let docAnchors = [];
 function computeDocAnchors(roots) {
@@ -833,8 +911,13 @@ function computeDocAnchors(roots) {
     .map((n, i) => ({ c: n.char, i }))
     .sort((a, b) => a.c - b.c);
   for (const a of anchors)
-    for (const sp of roots)
+    for (const sp of roots) {
+      // anchors of headings inside a removed block (subsection or
+      // tailoring) keep their scroll target but show no paragraph number:
+      // the collapsed block names what was removed
+      if ((sp.spt || sp.tai) && a.c >= sp.s && a.c < sp.e) a.hideNum = true;
       if (a.c > sp.s && a.c < sp.e) { a.c = sp.s; break; }
+    }
   const gaps = [];
   let pos = 0;
   for (const sp of roots) { gaps.push([pos, sp.s]); pos = sp.e; }
@@ -896,7 +979,7 @@ function origHtml(gapStart, a, b, emitted, rec, locked) {
       return { an, at };
     })
     .filter(m => m.at >= a && m.at <= b)
-    .map(m => { emitted.add(m.an.i); return { at: m.at, anchor: m.an.i }; });
+    .map(m => { emitted.add(m.an.i); return { at: m.at, anchor: m.an.i, hideNum: m.an.hideNum }; });
   for (const [ls, le] of locked)
     if (ls >= a && le <= b) marks.push({ at: ls, lockEnd: le });
   marks.sort((x, y) => x.at - y.at);
@@ -906,7 +989,7 @@ function origHtml(gapStart, a, b, emitted, rec, locked) {
     pos = m.at;
     if (m.anchor !== undefined) {
       const n = DATA.nav[m.anchor];
-      const num = n && n.depth > 0 && n.num
+      const num = n && n.depth > 0 && n.num && !m.hideNum
         ? `<span class="paranum">${esc(n.num)}</span>` : "";
       html += `<span class="navanchor" contenteditable="false" id="nav-${m.anchor}">${num}</span>`;
     } else {
@@ -985,6 +1068,14 @@ function buildDoc() {
         ? `<mark class="deleted taicut" data-opt="${esc(sp.tai)}" title="click to expand">▸ ${esc(sp.tai)} removed (${n} chars)</mark>`
         : "";
     }
+    if (sp.spt) {
+      if (state.view !== "redline") return "";
+      const s = sp.spt;
+      if (sptOpen.has(s.id))
+        return `<s class="sptcut open" data-spt="${s.id}" title="click to collapse">${noteBoldHtml(sp.s, sp.e)}</s>`;
+      const lines = DATA.text.slice(sp.s, sp.e).split("\n").length;
+      return `<mark class="deleted sptcut" data-spt="${s.id}" title="click to expand">▸ ${esc(s.num)} ${esc(s.title)}: removed (${lines} lines)</mark>`;
+    }
     return state.view === "redline" ? `<s class="unitcut">${inner}</s>` : "";
   };
   const gap = (from, to) =>
@@ -1001,6 +1092,11 @@ function buildDoc() {
   doc.querySelectorAll("mark.taicut").forEach(m => m.onclick = () => {
     alert("Tailoring block '" + m.dataset.opt + "' is removed by the Project Profile. Set it back to 'keep' to restore the text.");
   });
+  doc.querySelectorAll(".sptcut").forEach(m => m.onclick = () => {
+    const id = m.dataset.spt;
+    if (sptOpen.has(id)) sptOpen.delete(id); else sptOpen.add(id);
+    buildDoc();
+  });
   wireMeRuns(doc);
   ds.forEach(updateMark);
 }
@@ -1012,13 +1108,27 @@ function renderNav() {
   let html = `<div class="navroot">${esc(DATA.section)}</div>`;
   html += `<div class="navall"><a data-navall="collapse">collapse all</a> · ` +
     `<a data-navall="expand">expand all</a></div>`;
+  const rm = removedSet();
   html += items.map((n, i) => {
     const twist = isBranch(i)
       ? `<span class="navtwist" data-twist="${i}">${navCollapsed.has(i) ? "▸" : "▾"}</span>`
       : `<span class="navtwist"></span>`;
-    return `<div class="navrow2 d${n.depth}" data-i="${i}" style="--nd:${n.depth}" title="${esc(n.title)}">` +
+    let act = "", cls = "";
+    const s = n.spt && subById[n.spt];
+    if (s) {
+      // keep/remove for this subsection; unanswered = kept by default
+      const v = sptValue(s);
+      const via = s.governed_by ? ` (same decision as ${s.governed_by})` : "";
+      act = `<span class="navact">` +
+        `<button data-spt-act="keep" data-spt="${s.id}" class="${v === "keep" ? "on" : v ? "" : "dflt"}" ` +
+        `title="${v ? "keep" : "kept by default (no answer)"}${via}">keep</button>` +
+        `<button data-spt-act="remove" data-spt="${s.id}" class="${v === "remove" ? "on" : ""}" ` +
+        `title="remove this subsection and everything in it${via}">remove</button></span>`;
+      if (rm.has(s.id)) cls = s.parent && rm.has(s.parent) ? " sptunder" : " sptrm";
+    }
+    return `<div class="navrow2 d${n.depth}${cls}" data-i="${i}" style="--nd:${n.depth}" title="${esc(n.title)}">` +
       twist + `<span class="navnum">${esc(n.num)}</span>` +
-      `<span class="navttl">${esc(n.title)}</span></div>`;
+      `<span class="navttl">${esc(n.title)}</span>${act}</div>`;
   }).join("");
   nav.innerHTML = html;
   applyNavCollapse();
@@ -1028,6 +1138,10 @@ function renderNav() {
     if (navCollapsed.has(i)) navCollapsed.delete(i); else navCollapsed.add(i);
     t.textContent = navCollapsed.has(i) ? "▸" : "▾";
     applyNavCollapse();
+  });
+  nav.querySelectorAll("button[data-spt-act]").forEach(b => b.onclick = ev => {
+    ev.stopPropagation();
+    setSpt(b.dataset.spt, b.dataset.sptAct);
   });
   nav.querySelectorAll(".navrow2").forEach(row => row.onclick = () => {
     nav.querySelectorAll(".navrow2").forEach(r => r.classList.remove("active"));
@@ -1384,11 +1498,11 @@ function gotoNextUnanswered() {
   const start = activeId ? ds.findIndex(d => d.id === activeId) : -1;
   for (let i = 1; i <= ds.length; i++) {
     const d = ds[(start + i + ds.length) % ds.length];
-    if (d.safe && (!eff(d).a || pendingFills(d)) && !d.duplicate_of && !inRemovedTai(d)) { select(d.id, true); return; }
+    if (d.safe && (!eff(d).a || pendingFills(d)) && !d.duplicate_of && !inRemoved(d)) { select(d.id, true); return; }
   }
   for (let i = 1; i <= ds.length; i++) {  // fall back to any unanswered
     const d = ds[(start + i + ds.length) % ds.length];
-    if (d.safe && (!eff(d).a || pendingFills(d)) && !inRemovedTai(d)) { select(d.id, true); return; }
+    if (d.safe && (!eff(d).a || pendingFills(d)) && !inRemoved(d)) { select(d.id, true); return; }
   }
 }
 function gotoPrev() {
@@ -1734,7 +1848,7 @@ function renderProfile() {
   }
 }
 function updateProgress() {
-  const uniq = ds.filter(d => !d.duplicate_of && d.safe && !inRemovedTai(d));
+  const uniq = ds.filter(d => !d.duplicate_of && d.safe && !inRemoved(d));
   const done = uniq.filter(d => eff(d).a && !pendingFills(d)).length;
   const profAll = Object.keys(DATA.tailoring_options).length
     + (nPlural ? 1 : 0) + ((DATA.unit_spans || []).length ? 1 : 0);
@@ -1751,6 +1865,8 @@ function refresh() {
   ds.forEach(updateMark);
   renderPanel();
   updateProgress();
+  // a governing bracket answered in the panel changes its outline row
+  if (SUBS.some(s => s.governed_by)) renderNav();
 }
 
 // ---- header / footer actions ----
@@ -1768,7 +1884,7 @@ document.getElementById("btnView").onclick = () => {
   save(); rebuildDocAnchored(); renderPanel(); updateProgress();
 };
 document.getElementById("btnExport").onclick = () => {
-  const uniq = ds.filter(d => !d.duplicate_of && d.safe && !inRemovedTai(d));
+  const uniq = ds.filter(d => !d.duplicate_of && d.safe && !inRemoved(d));
   const open = uniq.filter(d => !eff(d).a || pendingFills(d)).map(d => d.id);
   const profAll = Object.keys(DATA.tailoring_options).length
     + (nPlural ? 1 : 0) + ((DATA.unit_spans || []).length ? 1 : 0);
@@ -1786,6 +1902,11 @@ document.getElementById("btnExport").onclick = () => {
     const d = byId[id];
     if (d && d.anchor) keyed[d.anchor] = { ...rec, id, options: d.options };
     else keyed[id] = rec;
+  }
+  // subsection keep/remove (governed ones travel as their bracket answer)
+  for (const [sid, v] of Object.entries(state.spt)) {
+    const s = subById[sid];
+    if (s) keyed[s.anchor] = { answer: v, id: sid, num: s.num, title: s.title };
   }
   const payload = { schema: "specgen.answers/2",
     section: DATA.section, title: DATA.title,
@@ -1813,8 +1934,19 @@ document.getElementById("fileImport").onchange = ev => {
     state.answers = {}; state.edits = {};
     const byAnchor = Object.fromEntries(ds.map(d => [d.anchor, d.id]));
     let orphans = 0;
+    state.spt = {};
+    const governedImports = [];
     for (const [k, v] of Object.entries(data.answers || {})) {
       if (k.startsWith("ME@")) { state.edits[k] = v; continue; }
+      if (k.includes("#spt:")) {
+        const s = subByAnchor[k];
+        if (!s) { orphans++; continue; }
+        const val = String((v && typeof v === "object" ? v.answer : v) || "").trim().toLowerCase();
+        if (val !== "keep" && val !== "remove") continue;
+        if (s.governed_by) governedImports.push([s.governed_by, val === "remove" ? "delete" : "keep"]);
+        else state.spt[s.id] = val;
+        continue;
+      }
       // anchor keys (v2 exports) map back to this master's ids; BRK keys
       // (older exports) load as-is
       const id = k.includes("#") ? byAnchor[k] : k;
@@ -1822,18 +1954,23 @@ document.getElementById("fileImport").onchange = ev => {
       const { id: _id, options: _opts, ...rec } = (v && typeof v === "object") ? v : { answer: v };
       state.answers[id] = rec;
     }
+    // a governed subsection answer is its bracket's answer; an explicit
+    // bracket answer in the same file wins here, and generate reports the
+    // disagreement as a conflict
+    for (const [brk, val] of governedImports)
+      if (!brkAnswerOf(brk)) state.answers[brk] = { ...(state.answers[brk] || {}), answer: val };
     editUndo = []; editRedo = [];
     staleEditsDropped = pruneStaleEdits();
-    save(); buildDoc(); renderPanel(); updateProgress(); renderProfile();
+    save(); buildDoc(); renderNav(); renderPanel(); updateProgress(); renderProfile();
     if (orphans) alert(`${orphans} answer(s) belong to decisions that are not in this master (the master changed). They were not applied.`);
   });
 };
 document.getElementById("btnClear").onclick = () => {
   if (confirm("Clear every answer on this page?")) {
-    state = { profile: {}, answers: {}, edits: {}, view: state.view || "redline",
-      navOpen: state.navOpen }; overrideIds.clear(); meCardId = null;
+    state = { profile: {}, answers: {}, edits: {}, spt: {}, view: state.view || "redline",
+      navOpen: state.navOpen }; overrideIds.clear(); meCardId = null; sptOpen.clear();
     editUndo = []; editRedo = [];
-    save(); buildDoc(); renderPanel(); updateProgress(); renderProfile();
+    save(); buildDoc(); renderNav(); renderPanel(); updateProgress(); renderProfile();
   }
 };
 
@@ -1869,5 +2006,6 @@ def write_html(manifest: dict, out_path: Path | str) -> None:
         .replace("__PLURAL_KEY__", json.dumps(PLURAL_KEY))
         .replace("__UNITS_KEY__", json.dumps(UNITS_KEY))
         .replace("__EDIT_CORE__", EDIT_CORE_JS)
+        .replace("__STRUCT_CORE__", STRUCT_CORE_JS)
     )
     Path(out_path).write_text(html, encoding="utf-8")

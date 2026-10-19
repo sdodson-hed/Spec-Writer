@@ -178,12 +178,15 @@ def build_manifest(sec: SecFile) -> dict:
     groups, stream, _offs = scan_groups(sec.source)
     locs = location_index(root)
     anchors = assign_anchors(groups, locs)
+    sid_at = {s.start: sid for sid, s in spt_ids(locs)}
     nav = [
         {
             "num": s.num,
             "title": s.title,
             "depth": s.depth,
             "char": bisect.bisect_left(_offs, s.start),
+            # outline rows for subsections carry their keep/remove decision id
+            **({"spt": sid_at[s.start]} if s.name == "SPT" else {}),
         }
         for s in locs
     ]
