@@ -169,6 +169,7 @@ def cmd_generate(args) -> int:
                   "(rerun with --force to proceed anyway)")
             return 1
         print("WARNING: proceeding despite unattributed signals (--force)")
+    _print_defects(report, "WARNING: source defect")
 
     profile, ans, fingerprint = read_answers(args.answers)
     if fingerprint is None:
@@ -202,11 +203,21 @@ def cmd_audit(args) -> int:
             print(f"{sig:32s} {row}")
         for u in report["unknowns"]:
             print(f"UNKNOWN {u['type']} @ {u['offset']}: {u['context']}")
+        _print_defects(report)
     if report["unknowns"]:
         print(f"FAIL: {len(report['unknowns'])} unattributed signal(s)")
         return 1
+    if report["defects"]:
+        print(f"SOURCE DEFECT: {len(report['defects'])} malformed tag(s) in the "
+              "master, kept as-is; not a clean pass")
+        return 2
     print("OK: every decision signal attributed")
     return 0
+
+
+def _print_defects(report, prefix: str = "DEFECT") -> None:
+    for d in report.get("defects", []):
+        print(f"{prefix} {d['type']} {d['raw']} @ {d['offset']}: {d['context']}")
 
 
 def cmd_html(args) -> int:
@@ -222,8 +233,9 @@ def cmd_html(args) -> int:
                   "(rerun with --force to proceed anyway)")
             return 1
         print("WARNING: proceeding despite unattributed signals (--force)")
+    _print_defects(report, "WARNING: source defect")
 
-    sec = secfile.parse(args.file)
+    sec = secfile.parse(args.file, tolerant=True)
     m = build_manifest(sec)
     out = args.out or (Path(args.file).stem + ".decisions.html")
     write_html(m, out)

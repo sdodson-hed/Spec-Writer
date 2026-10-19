@@ -14,7 +14,7 @@ from specgen.answers import read_answers_json, read_workbook, write_workbook
 from specgen.generate import GenerateError, generate
 from specgen.htmlpage import write_html
 from specgen.manifest import build_manifest
-from specgen.scan import scan_fingerprint, scan_groups
+from specgen.scan import legacy_scan_fingerprint, scan_fingerprint, scan_groups
 
 SRC = "<SEC><TXT>Provide [scroll][screw] compressors.</TXT></SEC>"
 SRC2 = "<SEC><TXT>Extra [text]. Provide [scroll][screw] compressors.</TXT></SEC>"
@@ -83,3 +83,30 @@ def test_generate_refuses_stale_fingerprint(tmp_path):
     assert _gen(tmp_path, None)["answers_fingerprint"] == "unstamped"
     forced = _gen(tmp_path, stale, force_stale=True)
     assert forced["answers_fingerprint"] == "MISMATCH (forced)"
+
+
+CRLF = "<SEC><TXT>Provide [scroll\r\n][screw] compressors.</TXT>\r\n</SEC>"
+LF = "<SEC><TXT>Provide [scroll\n][screw] compressors.</TXT>\n</SEC>"
+REFLOW = "<SEC><TXT>Longer text before. Provide [scroll\n][screw] compressors.</TXT>\n</SEC>"
+
+
+def test_fingerprint_ignores_line_endings():
+    assert scan_fingerprint(scan_groups(CRLF)[0]) == scan_fingerprint(scan_groups(LF)[0])
+
+
+def test_fingerprint_ignores_text_outside_brackets():
+    # 23 64 10 Apr->Jul 2026: reference article reflowed, no bracket changed
+    assert scan_fingerprint(scan_groups(LF)[0]) == scan_fingerprint(scan_groups(REFLOW)[0])
+
+
+def test_fingerprint_still_tracks_option_text_and_ids():
+    other = LF.replace("screw", "rotary screw")
+    assert scan_fingerprint(scan_groups(LF)[0]) != scan_fingerprint(scan_groups(other)[0])
+    # SRC2 inserts a group before: BRK-0001 now means something else
+    assert scan_fingerprint(scan_groups(SRC)[0]) != scan_fingerprint(scan_groups(SRC2)[0])
+
+
+def test_generate_accepts_legacy_fingerprint(tmp_path):
+    legacy = legacy_scan_fingerprint(scan_groups(SRC)[0])
+    assert legacy != scan_fingerprint(scan_groups(SRC)[0])
+    assert _gen(tmp_path, legacy)["answers_fingerprint"] == "match (legacy)"

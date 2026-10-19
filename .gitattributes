@@ -1,0 +1,4 @@
+# UFGS masters ship CRLF. Git must store and check out their bytes as-is,
+# or answers fingerprints and round-trip checks differ between machines.
+*.SEC -text
+*.sec -text

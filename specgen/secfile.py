@@ -161,6 +161,8 @@ class SecFile:
     prolog: list  # Misc/Text nodes before the root element
     root: Element
     epilog: list  # nodes after the root element
+    # tolerant-mode source defects (stray close tags kept as Misc nodes)
+    defects: list = field(default_factory=list)
 
     # -- round trip --------------------------------------------------------
 
@@ -177,15 +179,20 @@ class SecFile:
         Path(path).write_bytes(self.serialize().encode(ENCODING))
 
 
-def parse(path: Path | str) -> SecFile:
+def parse(path: Path | str, tolerant: bool = False) -> SecFile:
     path = Path(path)
-    return parse_source(path.read_bytes().decode(ENCODING), path)
+    return parse_source(path.read_bytes().decode(ENCODING), path, tolerant=tolerant)
 
 
-def parse_source(source: str, path: Path | str = Path("<memory>")) -> SecFile:
+def parse_source(
+    source: str, path: Path | str = Path("<memory>"), tolerant: bool = False
+) -> SecFile:
+    """Strict by default. tolerant=True accepts a close tag that matches no
+    open element (keeps it as a Misc node, records it in SecFile.defects)."""
     path = Path(path)
     prolog: list = []
     epilog: list = []
+    defects: list[dict] = []
     root: Element | None = None
     stack: list[Element] = []
 
@@ -225,6 +232,18 @@ def parse_source(source: str, path: Path | str = Path("<memory>")) -> SecFile:
             if is_end:
                 if not stack or stack[-1].name != name:
                     got = stack[-1].name if stack else None
+                    # Tolerant: a close tag that matches NOTHING open is a
+                    # stray (UFGS 01 42 00 NORSOK entry). Keep its raw text
+                    # so round-trip stays byte-identical, and record it. A
+                    # tag matching a deeper element is a real nesting error
+                    # and still raises.
+                    if tolerant and all(e.name != name for e in stack):
+                        emit(Misc(raw))
+                        defects.append(
+                            {"type": "stray-close-tag", "tag": name, "raw": raw,
+                             "offset": tag_start, "open": got}
+                        )
+                        continue
                     raise SecParseError(f"Mismatched </{name}> (open: {got})")
                 el = stack.pop()
                 el.close_raw = raw
@@ -258,4 +277,7 @@ def parse_source(source: str, path: Path | str = Path("<memory>")) -> SecFile:
     # The root was appended into prolog by emit() when its open tag was seen
     # (stack was empty and root was None) — pull it out.
     prolog = [node for node in prolog if node is not root]
-    return SecFile(path=path, source=source, prolog=prolog, root=root, epilog=epilog)
+    return SecFile(
+        path=path, source=source, prolog=prolog, root=root, epilog=epilog,
+        defects=defects,
+    )

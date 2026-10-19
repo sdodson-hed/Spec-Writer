@@ -262,10 +262,24 @@ def scan_groups(src: str) -> tuple[list[Group], str, list[int]]:
 
 
 def scan_fingerprint(groups: list[Group]) -> str:
-    """Stable hash of the decision surface: IDs, kinds, option texts, and
-    positions. Any master edit OR scanner-behavior change that shifts what
-    an answer ID means produces a different fingerprint, so `generate` can
-    refuse answer files recorded against a different scan (issue #23)."""
+    """Stable hash of the decision surface: ids, kinds and option texts in
+    document order. Any change that shifts what an answer id means changes
+    it (issue #23). Whitespace is normalized and positions are left out, so
+    CRLF vs LF copies, and edits to text outside brackets, do not."""
+    payload = [
+        (g.gid, g.kind, [_WS_RE.sub(" ", o.text).strip() for o in g.options])
+        for g in groups
+    ]
+    digest = hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    )
+    return digest.hexdigest()[:16]
+
+
+def legacy_scan_fingerprint(groups: list[Group]) -> str:
+    """Pre-2026-10 fingerprint: kept so older answer files still verify.
+    Hashes raw option text and char positions, so it differs between CRLF
+    and LF copies and moves whenever text before a group changes length."""
     payload = [
         (g.gid, g.kind, [o.text for o in g.options], g.char_start, g.char_end)
         for g in groups
