@@ -7,10 +7,17 @@ tailoring option, submittal, and reference a section demands of a specifier.
 
 ## Status
 
-- Lossless parser: **all 56 masters round-trip byte-identically**
-  (55 Division 23 + 26 20 00, Nov 2025 UFGS revision, UMRL April 2026).
-  26 20 00 joined the corpus after a partner-engineer review of its decision
-  page (2026-07-16) surfaced scanner-semantics gaps — see issues #33–#41.
+- Lossless parser: **all 431 masters in the current WBDG release
+  round-trip byte-identically** (Divisions 01 03 05 07 08 09 21 22 23 26 28
+  31 33, UMRL July 2026); 430 audit clean. 01 42 00 ships a stray `</URL>`
+  in its NORSOK entry: tolerant mode keeps it as raw text and `audit`
+  reports it as a source defect (exit 2), not a pass.
+  The earlier 56-master corpus (55 Division 23 + 26 20 00, UMRL April 2026)
+  is in `masters/Specifications` on the shared drive.
+- Stable anchors: answers are keyed by `<path>#<kind>:<hash8>[~n]`, not by
+  positional `BRK-NNNN` ids, so they survive quarterly UFGS releases and
+  CRLF/LF differences. Answers made on 03 30 00 (April 2026) carry 236 of
+  244 decisions to the July 2026 copy; the other 8 are reported, not applied.
 - Additive bracket lists: choice groups that are select-any lists
   ("[ single pole][, double pole][, and four-way]") render as checkboxes;
   connector-only spans ("[ or ]") are joiners, never options; kept items
@@ -41,6 +48,7 @@ python -m specgen generate  "masters/23 64 10.SEC" \
     --answers out/answers.xlsx -o out/generated/23_64_10.sec   # or .json
 python -m specgen audit     "masters/23 64 10.SEC"               # completeness gate
 python -m specgen generate  ... --revisions   # also emit .revisions.sec (SI tracked changes)
+python -m specgen generate  ... --strict      # refuse if any answer no longer resolves
 python scripts/audit_corpus.py [corpus_dir]   # audit + round-trip every .SEC under a dir
                                               # (default $SPECGEN_CORPUS, else masters/Specifications)
 python scripts/build_project.py <dir> <masters...>   # per-project batch + index
@@ -68,6 +76,17 @@ python scripts/build_project.py <dir> <masters...>   # per-project batch + index
    (parse, round-trip, well-formed) before it is written; unanswered
    decisions are never defaulted. Structurally unsafe groups (bracket spans
    crossing markup unevenly) are flagged for manual editing, never touched.
+
+Answer keys. Exports (`schema: specgen.answers/2`) and workbooks key each
+bracket answer by its anchor: the PRT/SPT title path, the decision kind, and
+a hash of its option text, e.g. `PART 2/REFRIGERANT#blank:2477bc03`. The
+`BRK-NNNN` id and option texts ride along for display. When the master
+changes (a new UFGS release), every anchor that still matches applies; an
+anchor that no longer matches goes to `.unresolved.md` as "master changed:
+decision not found" with the option text it was answered against, and is
+applied to nothing. Older answer files keyed on `BRK-NNNN` still load when
+their fingerprint matches this master. `--strict` turns any non-resolving
+answer or fingerprint mismatch into a hard stop.
 
 Shared-drive workflow: `build_project.py` sets up a per-project layout
 (`decisions/`, `answers/`, `generated/`, `index.html`) that organizes manifests,
