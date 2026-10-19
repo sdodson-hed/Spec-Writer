@@ -94,14 +94,16 @@ def write_workbook(manifest: dict, out_path: Path | str) -> None:
     # --- Answers sheet ---
     ws = wb.active
     ws.title = "Answers"
+    # Anchor is the key answers are recorded against (survives UFGS releases);
+    # ID is positional and for display only
     headers = ["ID", "Kind", "Same as", "Location", "Context", "Options", "Hint",
-               "Answer", "Notes"]
+               "Answer", "Notes", "Anchor"]
     ws.append(headers)
     for col, _h in enumerate(headers, 1):
         c = ws.cell(row=1, column=col)
         c.fill = _HEADER_FILL
         c.font = _HEADER_FONT
-    for col, w in enumerate([10, 9, 10, 34, 64, 42, 30, 24, 22], 1):
+    for col, w in enumerate([10, 9, 10, 34, 64, 42, 30, 24, 22, 40], 1):
         ws.column_dimensions[get_column_letter(col)].width = w
 
     keep_del = DataValidation(
@@ -141,8 +143,10 @@ def write_workbook(manifest: dict, out_path: Path | str) -> None:
                 d.get("hint", ""),
                 "",
                 "",
+                d.get("anchor", ""),
             ]
         )
+        ws.cell(row=row, column=10).font = _DUP_FONT
         for col in range(1, 8):
             ws.cell(row=row, column=col).alignment = Alignment(
                 wrap_text=True, vertical="top"
@@ -170,7 +174,7 @@ def write_workbook(manifest: dict, out_path: Path | str) -> None:
                 dv.add(answer_cell)
         row += 1
     ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:I{row - 1}"
+    ws.auto_filter.ref = f"A1:J{row - 1}"
 
     # --- Profile sheet ---
     ps = wb.create_sheet("Profile")
@@ -266,8 +270,108 @@ def read_answers_json(
             rec = {"answer": ans, "notes": notes}
             if office:
                 rec["office"] = office
+            if isinstance(v, dict):
+                # display fields from an anchor-keyed (v2) export: the BRK id
+                # and option texts the answer was given against, shown in the
+                # orphan report when the anchor no longer resolves
+                if v.get("id"):
+                    rec["id"] = str(v["id"]).strip()
+                if isinstance(v.get("options"), list):
+                    rec["options"] = [str(o) for o in v["options"]]
             answers[key] = rec
     return profile, answers, fingerprint
+
+
+def resolve_answer_keys(
+    answers: dict[str, dict],
+    groups: list,
+    anchors: dict[str, str],
+    fingerprint: str | None,
+    *,
+    force_stale: bool = False,
+    strict: bool = False,
+) -> tuple[dict[str, dict], list[dict], str]:
+    """Map an answers dict onto THIS master's BRK ids.
+
+    Returns (answers keyed by gid, orphans, fingerprint status).
+      - ME@ manual edits pass through unchanged.
+      - Anchor keys (contain "#") resolve to the group with that anchor. An
+        anchor with no match is an orphan: reported in .unresolved.md with
+        the option text it was answered against, applied to nothing.
+      - BRK keys are positional. They load only when the file is unstamped
+        (legacy behavior) or its fingerprint matches the current or legacy
+        scan; otherwise GenerateError unless force_stale.
+      - strict: any orphan, or a stamped fingerprint matching neither scan,
+        raises.
+    """
+    from .errors import GenerateError
+    from .scan import legacy_scan_fingerprint, scan_fingerprint
+
+    expected = scan_fingerprint(groups)
+    legacy = legacy_scan_fingerprint(groups)
+    fp_ok = fingerprint in (expected, legacy)
+    by_anchor = {a: gid for gid, a in anchors.items()}
+    brk_keys = [k for k in answers if not k.startswith("ME@") and "#" not in k]
+
+    stale_msg = (
+        f"answers were recorded against a different scan of this section "
+        f"(answers fingerprint {fingerprint}, master scan {expected}) — the "
+        f"master or the scanner has changed since the answer file was made. "
+        f"Re-open the decision page / workbook built from THIS master and "
+        f"re-export, or pass --force to apply anyway"
+    )
+    if fingerprint and not fp_ok:
+        if strict or (brk_keys and not force_stale):
+            raise GenerateError(stale_msg)
+
+    out: dict[str, dict] = {}
+    source_key: dict[str, str] = {}
+    orphans: list[dict] = []
+    for key, rec in answers.items():
+        if key.startswith("ME@"):
+            out[key] = rec
+            continue
+        if "#" in key:
+            gid = by_anchor.get(key)
+            if gid is None:
+                was = rec.get("id") or "?"
+                orphans.append(
+                    {
+                        "id": key,
+                        "kind": "orphan",
+                        "options": list(rec.get("options") or []),
+                        "answer": rec.get("answer", ""),
+                        "note": f"master changed: decision not found (was {was}); "
+                                f"answer was {rec.get('answer', '')!r}",
+                    }
+                )
+                continue
+        else:
+            gid = key
+        if gid in source_key:
+            raise GenerateError(
+                f"two answers for {gid}: {source_key[gid]}, {key}"
+            )
+        source_key[gid] = key
+        out[gid] = rec
+
+    if strict and orphans:
+        raise GenerateError(
+            f"{len(orphans)} answer(s) did not resolve to a decision in this "
+            f"master (master changed): {[o['id'] for o in orphans][:5]}"
+        )
+
+    if not brk_keys and len(source_key) + len(orphans) > 0:
+        status = "anchors"
+    elif not fingerprint:
+        status = "unstamped"
+    elif fingerprint == expected:
+        status = "match"
+    elif fingerprint == legacy:
+        status = "match (legacy)"
+    else:
+        status = "MISMATCH (forced)"
+    return out, orphans, status
 
 
 def read_answers(
@@ -295,11 +399,14 @@ def read_workbook(
     head = {str(c.value).strip().lower(): i for i, c in enumerate(ws[1]) if c.value}
     id_i, ans_i = head["id"], head["answer"]
     notes_i = head.get("notes")
+    anc_i = head.get("anchor")  # absent in workbooks made before anchors
     answers: dict[str, dict] = {}
     for row in ws.iter_rows(min_row=2, values_only=True):
         if not row or not row[id_i]:
             continue
         gid = str(row[id_i]).strip()
+        if anc_i is not None and len(row) > anc_i and row[anc_i]:
+            gid = str(row[anc_i]).strip()
         ans = "" if row[ans_i] is None else str(row[ans_i]).strip()
         notes = ""
         if notes_i is not None and len(row) > notes_i and row[notes_i] is not None:

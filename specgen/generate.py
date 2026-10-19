@@ -22,7 +22,9 @@ from collections import Counter
 from pathlib import Path
 
 from . import secfile
-from .answers import PLURAL_KEY, UNITS_KEY
+from .anchors import section_anchors
+from .answers import PLURAL_KEY, UNITS_KEY, resolve_answer_keys
+from .errors import GenerateError  # noqa: F401  (re-exported for callers)
 from .scan import (
     additive_join,
     connector_runs,
@@ -32,17 +34,11 @@ from .scan import (
     is_additive,
     is_connector,
     is_plural,
-    legacy_scan_fingerprint,
-    scan_fingerprint,
     scan_groups,
     strip_connector,
 )
 
 _WS_RE = re.compile(r"\s+")
-
-
-class GenerateError(Exception):
-    pass
 
 
 def _strip_revisions(source: str, drop: str, unwrap: str) -> str:
@@ -221,33 +217,19 @@ def generate(
     revisions: bool = False,
     fingerprint: str | None = None,
     force_stale: bool = False,
+    strict: bool = False,
 ) -> dict:
     master = Path(master)
     master_sec = secfile.parse(master, tolerant=True)
     src = master_sec.source
-    # Stale-answers gate (issue #23): the answer file carries the
-    # fingerprint of the scan it was recorded against; if this master's
-    # scan differs, every BRK id may point at a DIFFERENT bracket, so
-    # applying would silently write the wrong spec.
+    # Answer keys -> this master's BRK ids. Anchor keys resolve by anchor
+    # (orphans are reported, applied to nothing); BRK keys still go through
+    # the stale-fingerprint gate (issue #23). See answers.resolve_answer_keys.
     groups0 = scan_groups(src)[0]
-    expected = scan_fingerprint(groups0)
-    legacy = legacy_scan_fingerprint(groups0)
-    fp_status = "unstamped"
-    if fingerprint:
-        if fingerprint not in (expected, legacy) and not force_stale:
-            raise GenerateError(
-                f"answers were recorded against a different scan of this "
-                f"section (answers fingerprint {fingerprint}, master scan "
-                f"{expected}) — the master or the scanner has changed since "
-                f"the answer file was made. Re-open the decision page / "
-                f"workbook built from THIS master and re-export, or pass "
-                f"--force to apply anyway"
-            )
-        fp_status = (
-            "match" if fingerprint == expected
-            else "match (legacy)" if fingerprint == legacy
-            else "MISMATCH (forced)"
-        )
+    answers, orphans, fp_status = resolve_answer_keys(
+        answers, groups0, section_anchors(master_sec), fingerprint,
+        force_stale=force_stale, strict=strict,
+    )
     if revisions and re.search(r"<(?:DEL|ADD)[\s>/]", src):
         raise GenerateError(
             "master already contains <DEL>/<ADD> revision markup; "
@@ -617,6 +599,7 @@ def generate(
                 "in a follow-up pass or in SI Editor"
             )
         unresolved.append(entry)
+    unresolved.extend(orphans)
     unresolved.extend(unresolved_edits)
 
     # --- verify before writing ---
@@ -634,6 +617,8 @@ def generate(
         "master": str(master),
         "output": str(out_sec),
         "answers_fingerprint": fp_status,
+        "answers_carried": len(bracket_answers),
+        "answers_orphaned": len(orphans),
         "decisions_total": len(groups),
         "resolved": len([r for r in redline if r["kind"] != "tailoring"]),
         "unresolved": len(unresolved),

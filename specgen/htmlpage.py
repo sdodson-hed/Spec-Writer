@@ -1778,13 +1778,23 @@ document.getElementById("btnExport").onclick = () => {
     if (!confirm(`${open.length} decision(s) and ${profOpen} profile setting(s) are still unanswered:\n${list}\n\nExport anyway? They will be flagged for engineer review, never defaulted.`))
       return;
   }
-  const payload = { section: DATA.section, title: DATA.title,
+  // bracket answers are keyed by anchor (stable across UFGS releases); the
+  // BRK id and option texts ride along for display and the orphan report
+  const byId = Object.fromEntries(ds.map(d => [d.id, d]));
+  const keyed = {};
+  for (const [id, rec] of Object.entries(state.answers)) {
+    const d = byId[id];
+    if (d && d.anchor) keyed[d.anchor] = { ...rec, id, options: d.options };
+    else keyed[id] = rec;
+  }
+  const payload = { schema: "specgen.answers/2",
+    section: DATA.section, title: DATA.title,
     revision: DATA.revision, fingerprint: DATA.fingerprint,
     exported: new Date().toISOString(),
     complete: open.length === 0 && profOpen <= 0,
     unanswered: open,
     profile: state.profile,
-    answers: { ...state.answers, ...state.edits } };
+    answers: { ...keyed, ...state.edits } };
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)],
     { type: "application/json" }));
@@ -1801,12 +1811,21 @@ document.getElementById("fileImport").onchange = ev => {
     const data = JSON.parse(t);
     state.profile = data.profile || {};
     state.answers = {}; state.edits = {};
+    const byAnchor = Object.fromEntries(ds.map(d => [d.anchor, d.id]));
+    let orphans = 0;
     for (const [k, v] of Object.entries(data.answers || {})) {
-      if (k.startsWith("ME@")) state.edits[k] = v; else state.answers[k] = v;
+      if (k.startsWith("ME@")) { state.edits[k] = v; continue; }
+      // anchor keys (v2 exports) map back to this master's ids; BRK keys
+      // (older exports) load as-is
+      const id = k.includes("#") ? byAnchor[k] : k;
+      if (id === undefined) { orphans++; continue; }
+      const { id: _id, options: _opts, ...rec } = (v && typeof v === "object") ? v : { answer: v };
+      state.answers[id] = rec;
     }
     editUndo = []; editRedo = [];
     staleEditsDropped = pruneStaleEdits();
     save(); buildDoc(); renderPanel(); updateProgress(); renderProfile();
+    if (orphans) alert(`${orphans} answer(s) belong to decisions that are not in this master (the master changed). They were not applied.`);
   });
 };
 document.getElementById("btnClear").onclick = () => {

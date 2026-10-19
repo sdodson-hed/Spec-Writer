@@ -158,7 +158,7 @@ def cmd_answers(args) -> int:
 def cmd_generate(args) -> int:
     from .answers import read_answers
     from .audit import audit_file
-    from .generate import generate
+    from .generate import GenerateError, generate
 
     report = audit_file(args.file)
     if report["unknowns"]:
@@ -172,21 +172,32 @@ def cmd_generate(args) -> int:
     _print_defects(report, "WARNING: source defect")
 
     profile, ans, fingerprint = read_answers(args.answers)
-    if fingerprint is None:
+    has_brk_keys = any(not k.startswith("ME@") and "#" not in k for k in ans)
+    if fingerprint is None and has_brk_keys:
         print(
             "WARNING: answers file carries no scan fingerprint (made before "
             "fingerprinting, or hand-built) — cannot verify it matches this "
             "master; BRK ids are applied as-is"
         )
-    summary = generate(
-        args.file,
-        profile,
-        ans,
-        args.out,
-        revisions=args.revisions,
-        fingerprint=fingerprint,
-        force_stale=args.force,
-    )
+    try:
+        summary = generate(
+            args.file,
+            profile,
+            ans,
+            args.out,
+            revisions=args.revisions,
+            fingerprint=fingerprint,
+            force_stale=args.force,
+            strict=args.strict,
+        )
+    except GenerateError as e:
+        print(f"ERROR: {e}")
+        return 1
+    if summary["answers_orphaned"]:
+        print(
+            f"WARNING: {summary['answers_orphaned']} answer(s) did not resolve "
+            "(master changed); listed in .unresolved.md, applied to nothing"
+        )
     print(json.dumps(summary, indent=2))
     return 0
 
@@ -270,6 +281,11 @@ def main(argv=None) -> int:
             sp.add_argument("--answers", required=True)
             sp.add_argument("-o", "--out", required=True)
             sp.add_argument("--revisions", action="store_true")
+            sp.add_argument(
+                "--strict", action="store_true",
+                help="refuse if any answer does not resolve or the answers "
+                     "fingerprint does not match this master",
+            )
         if name in ("html", "generate"):
             sp.add_argument("--force", action="store_true")
         if name == "audit":

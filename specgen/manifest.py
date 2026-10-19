@@ -20,6 +20,7 @@ import bisect
 import re
 from dataclasses import dataclass
 
+from .anchors import assign_anchors
 from .scan import (
     connector_word,
     context_excerpt,
@@ -122,6 +123,7 @@ def build_manifest(sec: SecFile) -> dict:
     root = sec.root
     groups, stream, _offs = scan_groups(sec.source)
     locs = location_index(root)
+    anchors = assign_anchors(groups, locs)
     nav = [
         {
             "num": s.num,
@@ -193,6 +195,7 @@ def build_manifest(sec: SecFile) -> dict:
         decisions.append(
             {
                 "id": g.gid,
+                "anchor": anchors[g.gid],
                 "kind": g.kind,
                 "options": [_WS_RE.sub(" ", o.text).strip() for o in g.options],
                 "location": _locate(locs, g.src_start),
