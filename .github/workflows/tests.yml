@@ -1,0 +1,39 @@
+name: tests
+
+# Runs the pytest suite on every pull request and on pushes to main.
+# The 431-master WBDG corpus gate is not run here (the corpus lives outside
+# the repo); run scripts/audit_corpus.py locally and paste its summary line
+# into the PR description.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.14"]  # oldest supported, newest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # The edit-mode JS tests run under Node and skip without it
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: python -m pip install pytest lxml openpyxl
+
+      - name: Run tests
+        run: python -m pytest -q -rs
