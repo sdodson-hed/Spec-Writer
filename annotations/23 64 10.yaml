@@ -1,0 +1,139 @@
+# UFGS 23 64 10 WATER CHILLERS, VAPOR COMPRESSION TYPE (UMRL July 2026)
+#
+# Answers the section from the chiller schedule (air_cooled_chiller rows).
+# 23 64 10 has no blanks for refrigerant, capacity, EER or electrical data:
+# its Part 1 note puts chiller performance data on the drawing schedule. The
+# schedule drives the compressor / driver / condenser choices and which
+# subsections apply.
+#
+# Every derived fact maps from the scheduled `type`. A type missing from a
+# map leaves the fact unknown and its decisions unresolved; nothing is
+# assumed. Add new types here as schedules use them.
+#
+# Not here, by design (spec 2026-10-13 Maxwell table):
+#   - 2.4.3-2.4.7 heat pump / heater-chiller / multipipe, 2.6.14 purge and
+#     2.7.4 tube brush cleaning: "Confirm" rows, waiting for an engineer's
+#     sign-off on the rule (plan 2026-10-20 maxwell-annotation, D1).
+#   - 2.6.13 Receivers: needs an engineer.
+# Check after every UFGS release:
+#   python -m specgen annotate-check "masters/23 64 10.SEC" --annotation "annotations/23 64 10.yaml"
+
+section: "23 64 10"
+applies_to:
+  schedule: air_cooled_chiller
+
+derive:
+  driver:                     # option text of BRK-0025
+    from: type
+    map:
+      AIR-COOLED SCROLL: electric motor
+      AIR-COOLED SCREW: electric motor
+      AIR-COOLED RECIPROCATING: electric motor
+      WATER-COOLED SCROLL: electric motor
+      WATER-COOLED SCREW: electric motor
+      WATER-COOLED RECIPROCATING: electric motor
+      WATER-COOLED CENTRIFUGAL: electric motor
+  condenser:
+    from: type
+    map:
+      AIR-COOLED SCROLL: air-cooled
+      AIR-COOLED SCREW: air-cooled
+      AIR-COOLED RECIPROCATING: air-cooled
+      WATER-COOLED SCROLL: water-cooled
+      WATER-COOLED SCREW: water-cooled
+      WATER-COOLED RECIPROCATING: water-cooled
+      WATER-COOLED CENTRIFUGAL: water-cooled
+  condenser_component:        # option text of BRK-0026
+    from: type
+    map:
+      AIR-COOLED SCROLL: Air-cooled condenser coil
+      AIR-COOLED SCREW: Air-cooled condenser coil
+      AIR-COOLED RECIPROCATING: Air-cooled condenser coil
+      WATER-COOLED SCROLL: Water-cooled condenser
+      WATER-COOLED SCREW: Water-cooled condenser
+      WATER-COOLED RECIPROCATING: Water-cooled condenser
+      WATER-COOLED CENTRIFUGAL: Water-cooled condenser
+  arrangement:                # packaged (2.4) or split system (2.5)
+    from: type
+    map:
+      AIR-COOLED SCROLL: packaged
+      AIR-COOLED SCREW: packaged
+      AIR-COOLED RECIPROCATING: packaged
+      WATER-COOLED SCROLL: packaged
+      WATER-COOLED SCREW: packaged
+      WATER-COOLED RECIPROCATING: packaged
+      WATER-COOLED CENTRIFUGAL: packaged
+      SPLIT-SYSTEM SCROLL: split-system
+      SPLIT-SYSTEM RECIPROCATING: split-system
+
+rules:
+  # --- 2.4 self-contained chillers --------------------------------------------
+  # 2.4.1's title is "[Scroll][Reciprocating][Rotary Screw] Type Water Chiller[s]";
+  # its anchor segment reads SCROLLRECIPROCATINGROTARY SCREW TYPE WATER CHILLERS.
+  # 2.4.2 repeats the driver choice, so name 2.4.1 explicitly.
+  - id: compressor-type
+    target: {path: "PART 2/SELF-CONTAINED WATER CHILLERS*/SCROLL*TYPE WATER CHILLERS", kind: choice,
+             options: [Scroll, Reciprocating, Rotary Screw]}
+    choose: {match: "{compressor_type}"}
+
+  - id: compressor-driver
+    target: {path: "PART 2/SELF-CONTAINED WATER CHILLERS*/SCROLL*TYPE WATER CHILLERS", kind: choice,
+             options: [electric motor, gas-engine]}
+    choose: {match: "{driver}"}
+
+  - id: condenser
+    target: {path: "PART 2/SELF-CONTAINED WATER CHILLERS*/SCROLL*TYPE WATER CHILLERS", kind: choice,
+             options: [Air-cooled condenser coil, Water-cooled condenser]}
+    choose: {match: "{condenser_component}"}
+
+  - id: centrifugal-chiller
+    target: {path: "PART 2/SELF-CONTAINED WATER CHILLERS*/CENTRIFUGAL TYPE WATER CHILLERS", kind: spt}
+    remove_unless: {any_equipment: {compressor_type: CENTRIFUGAL}}
+
+  # --- 2.5 split-system chillers (with all children) ---------------------------
+  - id: split-system
+    target: {path: "PART 2/SPLIT-SYSTEM WATER CHILLERS*", kind: spt}
+    remove_unless: {any_equipment: {arrangement: split-system}}
+
+  # --- 2.6.5 compressors ---------------------------------------------------------
+  - id: scroll-compressors
+    target: {path: "PART 2/CHILLER COMPONENTS/COMPRESSOR(S)/SCROLL COMPRESSOR(S)", kind: spt}
+    remove_unless: {any_equipment: {compressor_type: SCROLL}}
+
+  - id: rotary-screw-compressors
+    target: {path: "PART 2/CHILLER COMPONENTS/COMPRESSOR(S)/ROTARY SCREW COMPRESSOR(S)", kind: spt}
+    remove_unless: {any_equipment: {compressor_type: {in: [ROTARY SCREW, SCREW]}}}
+
+  - id: centrifugal-compressors
+    target: {path: "PART 2/CHILLER COMPONENTS/COMPRESSOR(S)/CENTRIFUGAL COMPRESSOR(S)", kind: spt}
+    remove_unless: {any_equipment: {compressor_type: CENTRIFUGAL}}
+
+  # --- 2.6.6 / 2.6.7 compressor drivers -----------------------------------------
+  - id: electric-motor-driver
+    target: {path: "PART 2/CHILLER COMPONENTS/COMPRESSOR DRIVER, ELECTRIC MOTOR", kind: spt}
+    remove_unless: {any_equipment: {driver: electric motor}}
+
+  - id: gas-engine-driver
+    target: {path: "PART 2/CHILLER COMPONENTS/COMPRESSOR DRIVER, GAS-ENGINE", kind: spt}
+    remove_unless: {any_equipment: {driver: gas-engine}}
+
+  # --- 2.6.10 / 2.6.11 condenser coils, 2.10.3 cooling tower ---------------------
+  - id: air-cooled-condenser-coil
+    target: {path: "PART 2/CHILLER COMPONENTS/AIR-COOLED CONDENSER COIL", kind: spt}
+    remove_unless: {any_equipment: {condenser: air-cooled}}
+
+  - id: water-cooled-condenser-coil
+    target: {path: "PART 2/CHILLER COMPONENTS/WATER-COOLED CONDENSER COIL", kind: spt}
+    remove_unless: {any_equipment: {condenser: water-cooled}}
+
+  - id: cooling-tower
+    # "SUPPLEMENTAL COMPONENTS/SERVICES": the slash in the title is a path
+    # separator here, so match the segment with a wildcard
+    target: {path: "PART 2/SUPPLEMENTAL COMPONENTS*/COOLING TOWER", kind: spt}
+    remove_unless: {any_equipment: {condenser: water-cooled}}
+
+  # --- 2.6.12 heat recovery: basis of design, not the schedule -------------------
+  - id: heat-recovery
+    target: {path: "PART 2/CHILLER COMPONENTS/HEAT RECOVERY CONDENSER COIL", kind: spt}
+    remove_unless: {bod: {heat_recovery: true}}
+    requires: [bod.heat_recovery]
