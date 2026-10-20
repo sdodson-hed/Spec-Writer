@@ -21,8 +21,6 @@ from __future__ import annotations
 
 import re
 
-from .scan import scan_groups
-
 _TRAIL_RE = re.compile(r"(?:\s|<BRK/>)*")
 
 
@@ -82,16 +80,6 @@ def plan_cleanup(sec, manifest: dict, removed: dict[str, tuple[int, int]]) -> di
                 )
 
         # references: entry = <RID>, its <RTL>, and the spacing after
-        groups = [g for g in scan_groups(src)[0] if not g.in_note]
-        rtl_end = {}
-        for ref in sec.root.iter("REF"):
-            prev = None
-            for child in ref.children:
-                if getattr(child, "name", None) == "RID":
-                    prev = child
-                elif getattr(child, "name", None) == "RTL" and prev is not None:
-                    rtl_end[prev.src_start] = child.src_end
-                    prev = None
         orphan_refs: dict[str, dict] = {}
         for r in manifest.get("references", []):
             if inside(*r["src"]):
@@ -99,13 +87,10 @@ def plan_cleanup(sec, manifest: dict, removed: dict[str, tuple[int, int]]) -> di
             causes = orphaned(r.get("uses", []))
             if causes is None:
                 continue
-            start = r["src"][0]
-            end = rtl_end.get(start, r["src"][1])
+            start, end = r["entry_src"]
             act = {"kind": "reference", "id": r["rid"], "name": r["rid"], "caused_by": causes}
-            enc = [g for g in groups if g.src_start < start and end <= g.src_end]
-            if enc:
-                inner = min(enc, key=lambda g: g.src_end - g.src_start)
-                blocked.append({**act, "src": [start, end], "in_bracket": inner.gid})
+            if r["in_bracket"]:
+                blocked.append({**act, "src": [start, end], "in_bracket": r["in_bracket"]})
             else:
                 orphan_refs[r["rid"]] = {**act, "src": _with_trailing(src, start, end)}
         for o in manifest.get("reference_orgs", []):

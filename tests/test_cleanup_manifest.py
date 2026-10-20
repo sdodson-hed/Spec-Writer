@@ -119,6 +119,25 @@ def test_article_titled_submittals_wins_over_earlier_submittal_titles():
     assert names == ["Scroll Chiller", "Gas Engine", "Field Test Plan", "Never Used"]
 
 
+def test_text_positions_for_the_page():
+    m = _m()
+    text = m["text"]
+    e = {x["name"]: x for x in m["submittal_entries"]}
+    a, b = e["Gas Engine"]["chars"]
+    assert text[a:b] == "\tGas Engine; G, [_____]"    # <ITM> renders with a leading tab
+    assert [text[a:b] for a, b in e["Scroll Chiller"]["use_chars"]] == ["Scroll Chiller"] * 2
+    r = {x["rid"]: x for x in m["references"]}
+    a, b = r["AHRI 450"]["chars"]
+    assert text[a:b] == "AHRI 450\tRemote condensers"   # RID + RTL, tab from the layout
+    assert r["AHRI 450"]["entry_src"][1] > r["AHRI 450"]["src"][1]
+    assert r["AHRI 450"]["in_bracket"] is None
+    assert [text[a:b] for a, b in r["NFPA 37"]["use_chars"]] == ["NFPA 37"]
+    h = m["submittal_groups"][0]
+    assert text[slice(*h["chars"])] == "SD-03 Product Data"
+    o = m["reference_orgs"][1]
+    assert text[slice(*o["chars"])].startswith("NFPA")
+
+
 def test_existing_submittals_list_unchanged():
     m = _m()
     # the deduped name list the report prints keeps its old shape

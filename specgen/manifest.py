@@ -169,15 +169,25 @@ def _norm_key(t: str) -> str:
     return _WS_RE.sub(" ", t).strip().lower()
 
 
-def _cleanup_data(root: Element, sub_article, groups, declared: list[dict]) -> dict:
+def _cleanup_data(root: Element, sub_article, groups, declared: list[dict], offs) -> dict:
     """Where submittal items, references and section cross-references are
     declared and used, in master source spans, so cleanup (work order step
     4) can tell which ones lose every body use when subsections are removed.
+    Each span also comes as text-stream positions ("chars", "use_chars")
+    for the decision page's preview.
 
     A submittal item is one <ITM> in the submittals article, matched to body
     <SUB> uses by its first <SUB>'s normalized text; its reviewer code is a
     later <SUB> starting G or S. A reference is matched by its <RID> text.
-    `declared` (the manifest's references list) gains src/uses in place."""
+    `declared` (the manifest's references list) gains uses/in_bracket in
+    place."""
+
+    def chars(span) -> list[int]:
+        return [bisect.bisect_left(offs, span[0]), bisect.bisect_left(offs, span[1])]
+
+    def innermost(a: int, b: int):
+        enc = [g for g in groups if not g.in_note and g.src_start < a and b <= g.src_end]
+        return min(enc, key=lambda g: g.src_end - g.src_start, default=None)
     body_subs: dict[str, list[list[int]]] = {}
     a0, a1 = (sub_article.src_start, sub_article.src_end) if sub_article is not None else (-1, -1)
     for el in root.iter("SUB"):
@@ -203,11 +213,7 @@ def _cleanup_data(root: Element, sub_article, groups, declared: list[dict]) -> d
                  if _REVIEWER_RE.match(_WS_RE.sub(" ", e.text()).strip())),
                 None,
             )
-            enclosing = [
-                g for g in groups
-                if not g.in_note and g.src_start < itm.src_start and itm.src_end <= g.src_end
-            ]
-            inner = min(enclosing, key=lambda g: g.src_end - g.src_start, default=None)
+            inner = innermost(itm.src_start, itm.src_end)
             head = next((h for h in reversed(heads) if h["src"][0] < itm.src_start), None)
             eid = f"ITM-{len(entries) + 1:04d}"
             if head is not None:
@@ -224,6 +230,11 @@ def _cleanup_data(root: Element, sub_article, groups, declared: list[dict]) -> d
                 }
             )
         sd_groups = heads
+    for e in entries:
+        e["chars"] = chars(e["src"])
+        e["use_chars"] = [chars(u) for u in e["uses"]]
+    for h in sd_groups:
+        h["chars"] = chars(h["src"])
 
     body_rids: dict[str, list[list[int]]] = {}
     for rid in root.iter("RID"):
@@ -231,6 +242,10 @@ def _cleanup_data(root: Element, sub_article, groups, declared: list[dict]) -> d
             body_rids.setdefault(_norm_key(rid.text()), []).append([rid.src_start, rid.src_end])
     for d in declared:
         d["uses"] = body_rids.get(_norm_key(d["rid"]), [])
+        d["chars"] = chars(d["entry_src"])
+        d["use_chars"] = [chars(u) for u in d["uses"]]
+        inner = innermost(*d["entry_src"])
+        d["in_bracket"] = inner.gid if inner is not None else None
     orgs = []
     for ref in root.iter("REF"):
         org_el = ref.first("ORG")
@@ -238,6 +253,7 @@ def _cleanup_data(root: Element, sub_article, groups, declared: list[dict]) -> d
             {
                 "org": _WS_RE.sub(" ", org_el.text()).strip() if org_el is not None else "",
                 "src": [ref.src_start, ref.src_end],
+                "chars": chars([ref.src_start, ref.src_end]),
                 "rids": [d["rid"] for d in declared if ref.src_start <= d["src"][0] < ref.src_end],
             }
         )
@@ -440,6 +456,8 @@ def build_manifest(sec: SecFile) -> dict:
                             "title": _WS_RE.sub(" ", child.text()).strip(),
                             "org": org,
                             "src": [rid_el.src_start, rid_el.src_end],
+                            # the whole entry: <RID> through its <RTL>
+                            "entry_src": [rid_el.src_start, child.src_end],
                         }
                     )
                     rid_el = None
@@ -448,7 +466,7 @@ def build_manifest(sec: SecFile) -> dict:
         if not any(a.name == "REF" for a in rid.ancestors()):
             used_ids.add(_WS_RE.sub(" ", rid.text()).strip())
 
-    cleanup = _cleanup_data(root, sub_article, groups, declared)
+    cleanup = _cleanup_data(root, sub_article, groups, declared, _offs)
 
     # Legacy kinds are seeded so counts always carry kind_choice/kind_blank/
     # kind_optional (cli.cmd_report subscripts them); new kinds count in too.
