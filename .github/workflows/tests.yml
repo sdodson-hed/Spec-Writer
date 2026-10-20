@@ -21,16 +21,19 @@ jobs:
       matrix:
         python-version: ["3.10", "3.14"]  # oldest supported, newest
     steps:
-      - uses: actions/checkout@v4
+      # Action majors that run on Node 24 (the v4/v5 majors targeted Node 20,
+      # which GitHub runners deprecated in 2025)
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
 
-      # The edit-mode JS tests run under Node and skip without it
-      - uses: actions/setup-node@v4
+      # The edit-mode and subsection JS tests run under Node and skip without
+      # it. Node 22 is the maintained LTS (Node 20 reached end of life).
+      - uses: actions/setup-node@v5
         with:
-          node-version: "20"
+          node-version: "22"
 
       - name: Install dependencies
         run: python -m pip install pytest lxml openpyxl
