@@ -1,0 +1,8 @@
+# Runtime dependencies. Tests also need pytest (and Node for the JS tests).
+openpyxl
+lxml
+# Section annotations (YAML). On a Python without a prebuilt PyYAML wheel
+# (e.g. 3.15 at the time of writing), install the pure-Python build with
+# PYYAML_FORCE_LIBYAML=0 set; annotations are small, the C speedup is not
+# needed.
+PyYAML>=6.0
