@@ -21,6 +21,13 @@ from __future__ import annotations
 import copy
 
 
+def describe_conflict(answer, now: dict) -> str:
+    """'engineer answer X; prefill now Y from <ref> = <value>': one wording
+    for the merge report, .unresolved.md and the decision page."""
+    return (f"engineer answer {answer!r}; prefill now {now.get('answer', '')!r} "
+            f"from {now.get('ref', '?')} = {now.get('value')!r}")
+
+
 def _txt(v) -> str:
     return str(v if v is not None else "").strip().casefold()
 
@@ -81,10 +88,7 @@ def _merge_record(e: dict | None, n: dict | None) -> tuple[dict | None, str | No
         return res, outcome, f"engineer answer {e['answer']!r} stands; data unchanged"
     res["source"] = {"kind": "manual", **({"was": was} if was else {}), "now": now}
     res["state"] = "conflict"
-    ns = n.get("source", {})
-    detail = (f"engineer answer {e['answer']!r}; prefill now {n['answer']!r} "
-              f"from {ns.get('ref', '?')} = {ns.get('value')!r}")
-    return res, "conflict", detail
+    return res, "conflict", describe_conflict(e["answer"], now)
 
 
 def _profile_record(value, meta: dict | None) -> dict | None:

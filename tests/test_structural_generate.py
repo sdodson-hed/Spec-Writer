@@ -48,7 +48,7 @@ def test_remove_leaf(tmp_path):
     assert "<TTL>Scroll</TTL>" not in f["sec"]
     assert "<TTL>CHILLERS</TTL>" in f["sec"] and "<TTL>Centrifugal</TTL>" in f["sec"]
     c = ch["SPT-0003"]
-    assert (c["kind"], c["action"], c["source"]) == ("subsection", "removed subsection", "answer")
+    assert (c["kind"], c["action"], c["source"]) == ("subsection", "removed subsection", {"kind": "manual"})
     assert c["num"] == "2.1.1" and c["title"] == "Scroll"
     assert s["subsections_removed"] == 1
     assert "## SPT-0003 — removed subsection 2.1.1 Scroll" in f["md"]
@@ -96,7 +96,7 @@ def test_unanswered_subsections_are_kept_by_default_and_logged(tmp_path):
     s, f, ch = _gen(tmp_path, {})
     defaults = [c for c in ch.values() if c["kind"] == "subsection"]
     assert len(defaults) == 8
-    assert {(c["action"], c["source"]) for c in defaults} == {("kept by default", "default")}
+    assert {(c["action"], c["source"]["kind"]) for c in defaults} == {("kept by default", "default")}
     assert s["subsections_kept_default"] == 8
     assert "8 subsections kept by default (no answer)" in f["md"]
     assert f["sec"] == SRC  # nothing answered, nothing changed
@@ -104,7 +104,7 @@ def test_unanswered_subsections_are_kept_by_default_and_logged(tmp_path):
 
 def test_explicit_keep_is_logged_as_answer(tmp_path):
     _, _, ch = _gen(tmp_path, _spt("SPT-0007", "keep"))
-    assert (ch["SPT-0007"]["action"], ch["SPT-0007"]["source"]) == ("kept", "answer")
+    assert (ch["SPT-0007"]["action"], ch["SPT-0007"]["source"]) == ("kept", {"kind": "manual"})
 
 
 def test_repeated_titles_remove_only_the_answered_one(tmp_path):

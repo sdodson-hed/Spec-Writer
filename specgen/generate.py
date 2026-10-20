@@ -78,7 +78,7 @@ def _cleanup_entry(act: dict, action: str, before: str = "") -> dict:
         "action": action,
         "answer": "",
         "notes": "",
-        "source": "cleanup",
+        "source": {"kind": "cleanup"},
         "caused_by": act["caused_by"],
         "before": before,
         "after": "",
@@ -90,14 +90,28 @@ def _cleanup_entry(act: dict, action: str, before: str = "") -> dict:
     return entry
 
 
+def _provenance(rec: dict | None, default_kind: str) -> dict:
+    """source/state for a redline entry (spec section 6): the answer's own
+    provenance when it has one, else {"kind": default_kind}."""
+    rec = rec or {}
+    out = {"source": rec["source"] if isinstance(rec.get("source"), dict)
+           else {"kind": default_kind}}
+    if rec.get("state"):
+        out["state"] = rec["state"]
+    return out
+
+
 def _spt_entry(s: dict, action: str, rec: dict | None, source: str, **extra) -> dict:
+    # source: "default" for an unanswered keep (spec: source.kind default),
+    # otherwise the answer's provenance (manual when it has none)
+    prov = {"source": {"kind": "default"}} if source == "default" else _provenance(rec, "manual")
     return {
         "id": s["id"],
         "kind": "subsection",
         "action": action,
         "answer": (rec or {}).get("answer", ""),
         "notes": (rec or {}).get("notes", ""),
-        "source": source,
+        **prov,
         "num": s["num"],
         "title": s["title"],
         "before": "",
@@ -292,7 +306,16 @@ def generate(
     fingerprint: str | None = None,
     force_stale: bool = False,
     strict: bool = False,
+    profile_conflicts: dict[str, str] | None = None,
 ) -> dict:
+    # Project settings in conflict (step 7, D2/D5) are already out of
+    # `profile` (unanswered: their tailoring stays); they are listed for review
+    profile_conflicts = profile_conflicts or {}
+    if strict and profile_conflicts:
+        raise GenerateError(
+            f"{len(profile_conflicts)} conflict(s) in project settings "
+            f"({', '.join(sorted(profile_conflicts))}); resolve them on the decision page"
+        )
     master = Path(master)
     master_sec = secfile.parse(master, tolerant=True)
     src = master_sec.source
@@ -596,6 +619,10 @@ def generate(
                 "notes": notes,
                 "before": before,
                 "after": after,
+                # provenance (spec section 6): only in .redline.json, never
+                # in the issued .sec
+                **(_provenance(entry, "manual") if entry.get("source") or entry.get("state")
+                   else {}),
             }
         )
 
@@ -918,6 +945,10 @@ def generate(
     unresolved.extend(orphans)
     unresolved.extend(cleanup_unresolved)
     unresolved.extend(spt_unresolved)
+    unresolved.extend(
+        {"id": name, "kind": "profile setting", "options": [], "note": note}
+        for name, note in sorted(profile_conflicts.items())
+    )
     unresolved.extend(unresolved_edits)
 
     # --- verify before writing ---

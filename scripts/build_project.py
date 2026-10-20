@@ -16,7 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from specgen import secfile
-from specgen.answers import read_answers
+from specgen.answers import read_answers, read_profile_conflicts
 from specgen.audit import audit_source
 from specgen.generate import generate
 from specgen.htmlpage import write_html
@@ -69,6 +69,7 @@ def main() -> int:
                 summary = generate(
                     mpath, profile, ans, proj / "generated" / f"{name}.sec",
                     revisions=args.revisions, fingerprint=fingerprint,
+                    profile_conflicts=read_profile_conflicts(answers_file),
                 )
                 status = f"{summary['resolved']} resolved"
                 unresolved = f"{summary['unresolved']} unresolved"

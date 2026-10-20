@@ -171,7 +171,12 @@ def cmd_generate(args) -> int:
         print("WARNING: proceeding despite unattributed signals (--force)")
     _print_defects(report, "WARNING: source defect")
 
+    from .answers import read_profile_conflicts
+
     profile, ans, fingerprint = read_answers(args.answers)
+    profile_conflicts = read_profile_conflicts(args.answers)
+    for name, note in sorted(profile_conflicts.items()):
+        print(f"WARNING: project setting {name} is in {note}; left unanswered")
     has_brk_keys = any(not k.startswith("ME@") and "#" not in k for k in ans)
     if fingerprint is None and has_brk_keys:
         print(
@@ -189,6 +194,7 @@ def cmd_generate(args) -> int:
             fingerprint=fingerprint,
             force_stale=args.force,
             strict=args.strict,
+            profile_conflicts=profile_conflicts,
         )
     except GenerateError as e:
         print(f"ERROR: {e}")
