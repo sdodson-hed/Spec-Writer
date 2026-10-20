@@ -60,6 +60,12 @@ def test_unchanged_auto_is_silent():
     assert a[K] == auto("1", "SCROLL") and K not in r
 
 
+def test_same_answer_new_source_refreshes_silently():
+    # e.g. "remove centrifugal" holds for SCROLL and for ROTARY SCREW alike
+    a, r = m({K: auto("1", "SCROLL")}, {K: auto("1", "ROTARY SCREW")})
+    assert a[K]["source"]["value"] == "ROTARY SCREW" and K not in r
+
+
 # --- overrides survive; changed data makes a conflict --------------------------
 
 def test_override_kept_when_data_unchanged():

@@ -90,6 +90,56 @@ function cleanupPreview(C, removed) {
     struck.push({ kind: "reference", id: r.rid, chars: r.chars, why: why(r) });
   return { struck, blocked };
 }
+
+// ---- provenance (step 7; spec 2026-10-13 section 6) ----
+// A record: {answer, source: {kind, ref, rule, data_source, value}, state}.
+// state auto = written by prefill; overridden = the engineer changed it
+// (source.was keeps prefill's source and answer); conflict = the data
+// changed under an override (source.now = what prefill says now).
+// stampOne compares a record with its answer at the last snapshot, so
+// every code path that sets an answer is covered by one call in save().
+function stampOne(before, rec) {
+  const now = (rec && rec.answer) || "";
+  if (!rec || (before || "") === now) return rec;
+  const src = rec.source;
+  if (rec.state === "auto" && src) {
+    rec.source = { kind: "manual", was: { ...src, answer: before || "" } };
+    rec.state = "overridden";
+  } else if (rec.state === "conflict" && src && src.now) {
+    // a new answer during a conflict decides it, acknowledging prefill's now
+    rec.source = { kind: "manual", was: src.now };
+    rec.state = "overridden";
+  } else if (!src && now) {
+    rec.source = { kind: "manual" };
+  }
+  return rec;
+}
+function stampEdits(prev, recs) {
+  for (const [id, rec] of Object.entries(recs)) stampOne(prev[id], rec);
+  return recs;
+}
+function snapshot(recs) {
+  return Object.fromEntries(Object.entries(recs).map(([k, r]) => [k, (r && r.answer) || ""]));
+}
+function revertOverride(rec) {
+  const { answer, ...was } = rec.source.was;
+  return { ...rec, answer, source: was, state: "auto" };
+}
+function keepMine(rec) {
+  return { ...rec, source: { kind: "manual", was: rec.source.now }, state: "overridden" };
+}
+function takePrefill(rec) {
+  const { answer, ...now } = rec.source.now;
+  return { ...rec, answer, source: now, state: "auto" };
+}
+// CSS class suffix for coloring: conflict | overridden | <source.kind> | ""
+function provClass(rec) {
+  if (!rec) return "";
+  if (rec.state === "conflict") return "conflict";
+  if (!rec.answer) return "";
+  if (rec.state === "overridden") return "overridden";
+  return (rec.source && rec.source.kind) || "manual";
+}
 """
 
 # Pure edit-core: the run model behind inline editing. DOM-free by design so
@@ -525,6 +575,23 @@ button.primary { background: var(--accent); color: var(--accent-ink); border-col
 #doc s.unitcut { color: var(--del-ink); background: var(--del); text-decoration: line-through; }
 #doc mark.taicut { cursor: pointer; }
 #doc mark.sptcut { cursor: pointer; }
+/* provenance palette (step 7, plan D1; the 2026-10-13 palette was not found) */
+.prov-schedule { --prov: #2563eb; } .prov-bod { --prov: #0d9488; }
+.prov-rule { --prov: #6366f1; } .prov-manual, .prov-overridden { --prov: #d97706; }
+.prov-ai { --prov: #9333ea; } .prov-default { --prov: #6b7280; } .prov-conflict { --prov: #dc2626; }
+#doc mark[class*="prov-"] { box-shadow: inset 0 -3px 0 var(--prov); }
+#doc mark.prov-overridden { box-shadow: inset 0 -3px 0 var(--prov), inset 0 -5px 0 transparent;
+  text-decoration: underline dotted var(--prov); text-underline-offset: 5px; }
+#doc mark.prov-conflict { outline: 2px dashed var(--prov); outline-offset: 1px; }
+.provdot { color: var(--prov); font-size: 10px; margin-right: 3px; flex: none; }
+.provcard { border-left: 4px solid var(--prov, #999); padding: 6px 8px; margin: 8px 0;
+  font-size: 12.5px; background: var(--bg); border-radius: 4px; }
+.provcard .navrow { margin-top: 6px; }
+.provlegend { font-size: 11.5px; display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; }
+.provlegend span { display: inline-flex; align-items: center; gap: 4px; }
+.provlegend span::before { content: ""; width: 14px; height: 4px; background: var(--prov);
+  border-radius: 2px; display: inline-block; }
+.conflictcount { color: #dc2626; }
 #doc s.clncut { color: var(--del-ink); background: var(--del); text-decoration: line-through; }
 #doc mark.clnhint { outline: 2px dashed #c98a00; outline-offset: 1px; }
 #doc s.sptcut.open { color: var(--del-ink); background: var(--del); cursor: pointer; }
@@ -670,6 +737,13 @@ footer.actions { position: fixed; bottom: 0; left: 0; right: 0; background: var(
       <div class="muted">Click any highlighted decision in the text to answer it
       here. Yellow = to answer, green = answered.</div>
     </div>
+    <div class="panel provlegend" title="Where each answer came from (underline color on the text, dot in the outline)">
+      <b>Answer source</b>
+      <span class="prov-schedule">schedule</span><span class="prov-bod">basis of design</span>
+      <span class="prov-rule">project rule</span><span class="prov-manual">engineer</span>
+      <span class="prov-overridden">edited prefill</span><span class="prov-ai">AI</span>
+      <span class="prov-default">kept by default</span><span class="prov-conflict">conflict</span>
+    </div>
   </aside>
 </div>
 <footer class="actions">
@@ -771,11 +845,44 @@ __STRUCT_CORE__
 // ---- subsection keep/remove (state.spt holds non-governed answers; a
 // governed subsection reads and writes its bracket's answer) ----
 state.spt = state.spt || {};
+// provenance of subsection answers and project settings ({source, state}),
+// kept beside the plain values the rest of the page reads
+state.sptMeta = state.sptMeta || {};
+state.profileMeta = state.profileMeta || {};
 const SUBS = DATA.subsections || [];
 const subById = Object.fromEntries(SUBS.map(s => [s.id, s]));
 const subByAnchor = Object.fromEntries(SUBS.map(s => [s.anchor, s]));
-const brkAnswerOf = id => ((state.answers[id] || {}).answer || "");
-const removedSet = () => removedSubsections(SUBS, state.spt, brkAnswerOf);
+// a conflict counts as unanswered everywhere, as in generate (step 7 D2)
+const brkAnswerOf = id => {
+  const r = state.answers[id] || {};
+  return r.state === "conflict" ? "" : (r.answer || "");
+};
+const sptEffective = () => Object.fromEntries(Object.entries(state.spt)
+  .filter(([id]) => (state.sptMeta[id] || {}).state !== "conflict"));
+const removedSet = () => removedSubsections(SUBS, sptEffective(), brkAnswerOf);
+// ---- provenance stamping: one call in save() covers every edit path ----
+let provSnap = null;
+function takeSnap() {
+  provSnap = { a: snapshot(state.answers), s: { ...state.spt }, p: { ...state.profile } };
+}
+function stampMeta(values, metas, before) {
+  for (const id of new Set([...Object.keys(values), ...Object.keys(metas)])) {
+    if (!values[id]) {  // cleared: back to unanswered, provenance goes with it
+      if ((metas[id] || {}).state !== "conflict") delete metas[id];
+      continue;
+    }
+    const rec = stampOne(before[id], { answer: values[id], ...(metas[id] || {}) });
+    if (rec.source) metas[id] = { source: rec.source, ...(rec.state ? { state: rec.state } : {}) };
+  }
+}
+function stampAll() {
+  if (!provSnap) return;
+  stampEdits(provSnap.a, state.answers);
+  stampMeta(state.spt, state.sptMeta, provSnap.s);
+  stampMeta(state.profile, state.profileMeta, provSnap.p);
+  takeSnap();
+}
+takeSnap();
 const removedSpans = () => { const rm = removedSet(); return SUBS.filter(s => rm.has(s.id)).map(s => s.span); };
 // what generate's removal cleanup will drop for the current removals
 const CLEANUP_DATA = { items: DATA.submittal_entries || [], heads: DATA.submittal_groups || [],
@@ -799,22 +906,40 @@ function setSpt(sid, v) {
     if ((cur.answer || "").toLowerCase() === want) delete cur.answer; else cur.answer = want;
     if (cur.answer || cur.notes) state.answers[s.governed_by] = cur;
     else delete state.answers[s.governed_by];
+  } else if ((state.sptMeta[sid] || {}).state === "conflict") {
+    // resolving a conflict: picking prefill's value takes it, the other keeps yours
+    const now = state.sptMeta[sid].source.now;
+    state.spt[sid] = v;
+    const { answer, ...nowSrc } = now;
+    state.sptMeta[sid] = v === answer ? { source: nowSrc, state: "auto" }
+      : { source: { kind: "manual", was: now }, state: "overridden" };
+    takeSnap();
   } else if (state.spt[sid] === v) delete state.spt[sid];
   else state.spt[sid] = v;
   save(); buildDoc(); renderNav(); refresh();
 }
+function resolveProfileConflict(key, v) {
+  const now = state.profileMeta[key].source.now;
+  state.profile[key] = v;
+  const { answer, ...nowSrc } = now;
+  state.profileMeta[key] = v === answer ? { source: nowSrc, state: "auto" }
+    : { source: { kind: "manual", was: now }, state: "overridden" };
+  takeSnap();
+}
 let sptOpen = new Set();  // collapsed removed blocks the reader expanded
 let dirty = false;
-const save = () => { dirty = true; localStorage.setItem(KEY, JSON.stringify(state)); };
+const save = () => { stampAll(); dirty = true; localStorage.setItem(KEY, JSON.stringify(state)); };
 // after ds/byId: pruneStaleEdits -> meConflict reads ds and the profile
 let staleEditsDropped = pruneStaleEdits();
 
 function eff(d) {
   const own = state.answers[d.id];
+  // a conflict is unanswered until the engineer keeps or takes (step 7 D2)
+  if (own && own.state === "conflict") return { a: "", from: null, conflict: true };
   if (own && own.answer) return { a: own.answer, from: null };
   if (d.duplicate_of) {
     const src = state.answers[d.duplicate_of];
-    if (src && src.answer) return { a: src.answer, from: d.duplicate_of };
+    if (src && src.answer && src.state !== "conflict") return { a: src.answer, from: d.duplicate_of };
   }
   return { a: "", from: null };
 }
@@ -1178,7 +1303,14 @@ function renderNav() {
       // keep/remove for this subsection; unanswered = kept by default
       const v = sptValue(s);
       const via = s.governed_by ? ` (same decision as ${s.governed_by})` : "";
-      act = `<span class="navact">` +
+      const meta = s.governed_by ? state.answers[s.governed_by]
+        : state.sptMeta[s.id] && { answer: state.spt[s.id], ...state.sptMeta[s.id] };
+      const pk = provClass(meta);
+      const tip = pk === "conflict" ? `conflict: yours ${meta.answer}, prefill now ${meta.source.now.answer}` +
+        ` (${srcText(meta.source.now)}); pick keep or remove to decide`
+        : pk ? `answer from ${pk === "overridden" ? "you (edited prefill)" : pk}` : "";
+      act = (pk ? `<span class="provdot prov-${pk}" title="${esc(tip)}">●</span>` : "") +
+        `<span class="navact">` +
         `<button data-spt-act="keep" data-spt="${s.id}" class="${v === "keep" ? "on" : v ? "" : "dflt"}" ` +
         `title="${v ? "keep" : "kept by default (no answer)"}${via}">keep</button>` +
         `<button data-spt-act="remove" data-spt="${s.id}" class="${v === "remove" ? "on" : ""}" ` +
@@ -1234,6 +1366,9 @@ function updateMark(d) {
   if (!m) return;
   const e = eff(d);
   const cls = [];
+  // provenance color (step 7): the record that supplies the answer
+  const pc = provClass(state.answers[d.id] || (e.from ? state.answers[e.from] : null));
+  if (pc) cls.push("prov-" + pc);
   if (!d.safe) cls.push("unsafe");
   if (d.id === activeId) cls.push("active");
   if (!e.a) {
@@ -1301,6 +1436,46 @@ function select(id, scrollDoc) {
     if (m) m.scrollIntoView({ block: "center", behavior: "smooth" });
   }
 }
+// ---- provenance card (step 7) ----
+function answerLabel(d, a) {
+  const idx = optionIdx(d, a);
+  return idx ? idx.map(i => d.options[i]).join(", ") : (a || "");
+}
+function srcText(s) {
+  if (!s) return "";
+  const v = s.value === undefined ? "" :
+    " = " + (typeof s.value === "string" ? s.value : JSON.stringify(s.value));
+  return (s.ref || s.kind) + v +
+    (s.data_source && s.data_source !== "project" ? " · " + s.data_source : "") +
+    (s.rule ? " · rule " + s.rule : "");
+}
+function provCard(d) {
+  const r = state.answers[d.id];
+  if (!r || !r.source) return "";
+  const s = r.source;
+  if (r.state === "conflict" && s.now)
+    return `<div class="provcard prov-conflict"><b>Conflict.</b> Your answer:
+      <b>${esc(answerLabel(d, r.answer))}</b>. Prefill now:
+      <b>${esc(answerLabel(d, s.now.answer))}</b> from ${esc(srcText(s.now))}.
+      Neither is used until you choose.
+      <div class="navrow"><button data-prov="keep">Keep mine</button>
+      <button data-prov="take" class="primary">Take prefill</button></div></div>`;
+  if (r.state === "overridden" && s.was)
+    return `<div class="provcard prov-overridden"><span class="chip">edited</span>
+      Prefill said <b>${esc(answerLabel(d, s.was.answer))}</b> from ${esc(srcText(s.was))}.
+      <div class="navrow"><button data-prov="revert">Revert to prefill</button></div></div>`;
+  if (r.state === "auto")
+    return `<div class="provcard prov-${esc(s.kind)}">From ${esc(srcText(s))}.</div>`;
+  return "";  // answered by hand: no card
+}
+function wireProv(p, id) {
+  p.querySelectorAll("[data-prov]").forEach(b => b.onclick = () => {
+    const fn = { keep: keepMine, take: takePrefill, revert: revertOverride }[b.dataset.prov];
+    state.answers[id] = fn(state.answers[id]);
+    takeSnap();  // the resolution itself is not an edit
+    save(); refresh();
+  });
+}
 function renderPanel() {
   const p = document.getElementById("decPanel");
   if (meCardId) { renderMeCard(p); return; }
@@ -1325,6 +1500,7 @@ function renderPanel() {
     <summary style="cursor:pointer;font-size:12px;font-weight:700">Designer note</summary>
     <div style="font-size:12.5px;margin-top:6px">${esc(d.note_guidance)}</div></details>`;
   if (d.hint) h += `<div class="hint">${esc(d.hint)}</div>`;
+  h += provCard(d);
   if (!d.safe) {
     h += `<div class="dupnote">This bracket's options cross structural markup, so it can't be answered as a simple choice. Turn on Edit (top bar) and revise the bracketed text directly in the document — your changes are tracked and applied when you generate.</div>` + navRow();
     p.innerHTML = h; wireNav(p); return;
@@ -1417,6 +1593,7 @@ function renderPanel() {
   h += `<div class="navrow"><button data-act="edittext">Edit text… (start from the original)</button></div>`;
   h += navRow();
   p.innerHTML = h;
+  wireProv(p, d.id);
   p.querySelectorAll(".opts [data-val]").forEach(b =>
     b.onclick = () => {
       if (d.kind === "choice" && d.inline && b.dataset.val === "delete" &&
@@ -1561,8 +1738,20 @@ function wireNav(p) {
     if (m) m.scrollIntoView({ block: "center", behavior: "smooth" });
   };
 }
+// open conflicts (step 7): decisions, subsections and project settings
+function countConflicts() {
+  const isC = r => r && r.state === "conflict";
+  return Object.values(state.answers).filter(isC).length +
+    Object.values(state.sptMeta).filter(isC).length +
+    Object.values(state.profileMeta).filter(isC).length;
+}
 function gotoNextUnanswered() {
   const start = activeId ? ds.findIndex(d => d.id === activeId) : -1;
+  // conflicts first: they hold back an answer the engineer already gave
+  for (let i = 1; i <= ds.length; i++) {
+    const d = ds[(start + i + ds.length) % ds.length];
+    if ((state.answers[d.id] || {}).state === "conflict" && !inRemoved(d)) { select(d.id, true); return; }
+  }
   for (let i = 1; i <= ds.length; i++) {
     const d = ds[(start + i + ds.length) % ds.length];
     if (d.safe && (!eff(d).a || pendingFills(d)) && !d.duplicate_of && !inRemoved(d)) { select(d.id, true); return; }
@@ -1897,13 +2086,20 @@ function renderProfile() {
     row.className = "row";
     const l1 = it.labels ? it.labels[0] : "keep", l2 = it.labels ? it.labels[1] : "remove";
     const v1 = it.values ? it.values[0] : "keep", v2 = it.values ? it.values[1] : "remove";
-    row.innerHTML = `<span class="name">${esc(it.key)}</span>
+    const pm = state.profileMeta[it.key];
+    const pk = provClass(pm && { answer: val || pm.answer, ...pm });
+    const conflictNote = pk === "conflict"
+      ? `<div class="provcard prov-conflict" style="flex-basis:100%">Conflict: yours
+        <b>${esc(pm.answer)}</b>, prefill now <b>${esc(pm.source.now.answer)}</b> from
+        ${esc(srcText(pm.source.now))}. Not applied; pick one to decide.</div>` : "";
+    row.innerHTML = `<span class="name">${pk ? `<span class="provdot prov-${pk}">●</span>` : ""}${esc(it.key)}</span>
       <span class="meta">${esc(it.meta)}</span>
       <span class="seg">
         <button data-v="${v1}" class="${val === v1 ? "on" : ""}">${l1}</button>
-        <button data-v="${v2}" class="${val === v2 ? "on" : ""}">${l2}</button></span>`;
+        <button data-v="${v2}" class="${val === v2 ? "on" : ""}">${l2}</button></span>` + conflictNote;
     row.querySelectorAll(".seg button").forEach(b => b.onclick = () => {
-      state.profile[it.key] = state.profile[it.key] === b.dataset.v ? "" : b.dataset.v;
+      if (pk === "conflict") resolveProfileConflict(it.key, b.dataset.v);
+      else state.profile[it.key] = state.profile[it.key] === b.dataset.v ? "" : b.dataset.v;
       if (!state.profile[it.key]) delete state.profile[it.key];
       // profile changes can move gap boundaries (buildDoc below); stale undo
       // steps keyed to old data-s offsets would corrupt the record set.
@@ -1924,9 +2120,11 @@ function updateProgress() {
   document.getElementById("pBar").style.width =
     Math.round(100 * (done + profDone) / (uniq.length + profAll)) + "%";
   const meCount = Object.keys(state.edits || {}).length;
-  document.getElementById("pCount").textContent =
-    `${done} / ${uniq.length} decisions · ${profDone} / ${profAll} profile` +
-    (meCount ? ` · ${meCount} text edits` : "");
+  const conflicts = countConflicts();
+  document.getElementById("pCount").innerHTML =
+    esc(`${done} / ${uniq.length} decisions · ${profDone} / ${profAll} profile` +
+      (meCount ? ` · ${meCount} text edits` : "")) +
+    (conflicts ? ` · <b class="conflictcount">${conflicts} conflict${conflicts > 1 ? "s" : ""}</b>` : "");
 }
 function refresh() {
   ds.forEach(updateMark);
@@ -1977,7 +2175,8 @@ document.getElementById("btnExport").onclick = () => {
   // subsection keep/remove (governed ones travel as their bracket answer)
   for (const [sid, v] of Object.entries(state.spt)) {
     const s = subById[sid];
-    if (s) keyed[s.anchor] = { answer: v, id: sid, num: s.num, title: s.title };
+    if (s) keyed[s.anchor] = { answer: v, id: sid, num: s.num, title: s.title,
+                               ...(state.sptMeta[sid] || {}) };
   }
   const payload = { schema: "specgen.answers/2",
     section: DATA.section, title: DATA.title,
@@ -1986,6 +2185,7 @@ document.getElementById("btnExport").onclick = () => {
     complete: open.length === 0 && profOpen <= 0,
     unanswered: open,
     profile: state.profile,
+    profile_meta: state.profileMeta,
     answers: { ...keyed, ...state.edits } };
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)],
@@ -2002,6 +2202,8 @@ document.getElementById("fileImport").onchange = ev => {
   f.text().then(t => {
     const data = JSON.parse(t);
     state.profile = data.profile || {};
+    state.profileMeta = data.profile_meta || {};
+    state.sptMeta = {};
     state.answers = {}; state.edits = {};
     const byAnchor = Object.fromEntries(ds.map(d => [d.anchor, d.id]));
     let orphans = 0;
@@ -2014,8 +2216,12 @@ document.getElementById("fileImport").onchange = ev => {
         if (!s) { orphans++; continue; }
         const val = String((v && typeof v === "object" ? v.answer : v) || "").trim().toLowerCase();
         if (val !== "keep" && val !== "remove") continue;
-        if (s.governed_by) governedImports.push([s.governed_by, val === "remove" ? "delete" : "keep"]);
-        else state.spt[s.id] = val;
+        if (s.governed_by) governedImports.push([s.governed_by, val === "remove" ? "delete" : "keep", v]);
+        else {
+          state.spt[s.id] = val;
+          if (v && v.source)
+            state.sptMeta[s.id] = { source: v.source, ...(v.state ? { state: v.state } : {}) };
+        }
         continue;
       }
       // anchor keys (v2 exports) map back to this master's ids; BRK keys
@@ -2028,19 +2234,25 @@ document.getElementById("fileImport").onchange = ev => {
     // a governed subsection answer is its bracket's answer; an explicit
     // bracket answer in the same file wins here, and generate reports the
     // disagreement as a conflict
-    for (const [brk, val] of governedImports)
-      if (!brkAnswerOf(brk)) state.answers[brk] = { ...(state.answers[brk] || {}), answer: val };
+    for (const [brk, val, v] of governedImports)
+      if (!brkAnswerOf(brk)) state.answers[brk] = {
+        ...(state.answers[brk] || {}), answer: val,
+        ...(v && v.source ? { source: v.source } : {}), ...(v && v.state ? { state: v.state } : {}),
+      };
     editUndo = []; editRedo = [];
     staleEditsDropped = pruneStaleEdits();
+    takeSnap();  // imported answers are not edits
     save(); buildDoc(); renderNav(); renderPanel(); updateProgress(); renderProfile();
     if (orphans) alert(`${orphans} answer(s) belong to decisions that are not in this master (the master changed). They were not applied.`);
   });
 };
 document.getElementById("btnClear").onclick = () => {
   if (confirm("Clear every answer on this page?")) {
-    state = { profile: {}, answers: {}, edits: {}, spt: {}, view: state.view || "redline",
-      navOpen: state.navOpen }; overrideIds.clear(); meCardId = null; sptOpen.clear();
+    state = { profile: {}, answers: {}, edits: {}, spt: {}, sptMeta: {}, profileMeta: {},
+      view: state.view || "redline", navOpen: state.navOpen };
+    overrideIds.clear(); meCardId = null; sptOpen.clear();
     editUndo = []; editRedo = [];
+    takeSnap();
     save(); buildDoc(); renderNav(); renderPanel(); updateProgress(); renderProfile();
   }
 };

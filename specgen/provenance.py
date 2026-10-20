@@ -52,8 +52,8 @@ def _merge_record(e: dict | None, n: dict | None) -> tuple[dict | None, str | No
     if e.get("state") == "auto":
         if n is None:
             return None, "dropped", f"no rule answers it now (was {e['answer']!r})"
-        if n == e:
-            return copy.deepcopy(e), None, ""
+        if n == e or _txt(n.get("answer")) == _txt(e["answer"]):
+            return copy.deepcopy(n), None, ""  # same answer: refresh the source quietly
         return copy.deepcopy(n), "updated", f"{e['answer']!r} -> {n.get('answer', '')!r}"
 
     # the engineer's answer (overridden, conflict, or by hand)
