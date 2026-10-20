@@ -165,6 +165,15 @@ def revert_revisions(source: str) -> str:
     return _strip_revisions(source, drop="ADD", unwrap="DEL")
 
 
+def _plural_case(marker: str, prev: str) -> str:
+    """A kept plural marker written in capitals after a lowercase letter
+    ("Chiller[S]" in 23 64 10) would read "ChillerS": match the word's case.
+    "CHILLER[S]" in an all-caps title keeps its capital."""
+    if marker.isupper() and prev.isalpha() and prev.islower():
+        return marker.lower()
+    return marker
+
+
 def _rev_wrap(g, src: str, low: str, after: str, picked, office: str) -> str:
     before = src[g.src_start : g.src_end]
     if low == "delete":
@@ -477,6 +486,7 @@ def generate(
         before = src[g.src_start : g.src_end]
         low = ans.lower()
         picked_for_rev = None
+        case_fixed = False  # plural marker lowercased: revisions show DEL/ADD
 
         if not ans or (
             low == "keep" and g.kind not in ("optional", "submittal-review")
@@ -505,6 +515,13 @@ def generate(
         elif low == "keep":  # optional: keep text, drop brackets
             after = src[g.options[0].src_start : g.options[0].src_end]
             action = "kept (brackets removed)"
+            if is_plural(g):
+                fixed = _plural_case(after, stream[g.char_start - 1] if g.char_start else "")
+                if fixed != after:
+                    action = (f"kept plural; lowercased {after!r} to match the "
+                              f"word before it")
+                    after = fixed
+                    case_fixed = True
             if g.kind == "submittal-review" and entry.get("office"):
                 filled = re.sub(
                     r"\[[^][]*\]", lambda _m: entry["office"], after, count=1
@@ -559,7 +576,9 @@ def generate(
             office = (
                 entry.get("office", "") if g.kind == "submittal-review" else ""
             )
-            wrapped = _rev_wrap(g, rev, low, after, picked_for_rev, office)
+            wrapped = _rev_wrap(
+                g, rev, "replace" if case_fixed else low, after, picked_for_rev, office
+            )
             rev = rev[: g.src_start] + wrapped + rev[g.src_end :]
         src = src[: g.src_start] + after + src[g.src_end :]
         if propagated:
