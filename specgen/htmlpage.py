@@ -136,6 +136,17 @@ function followSameAs(recs) {
   }
   return recs;
 }
+// one subsection record from an answers file: keep/remove (anything else is
+// not an answer), its note (prefill's reason, or the engineer's), provenance
+function readSptImport(v) {
+  const rec = (v && typeof v === "object") ? v : { answer: v };
+  const value = String(rec.answer || "").trim().toLowerCase();
+  return {
+    value: value === "keep" || value === "remove" ? value : "",
+    notes: String(rec.notes || "").trim(),
+    meta: rec.source ? { source: rec.source, ...(rec.state ? { state: rec.state } : {}) } : null,
+  };
+}
 function snapshot(recs) {
   return Object.fromEntries(Object.entries(recs).map(([k, r]) => [k, (r && r.answer) || ""]));
 }
@@ -602,6 +613,7 @@ button.primary { background: var(--accent); color: var(--accent-ink); border-col
   text-decoration: underline dotted var(--prov); text-underline-offset: 5px; }
 #doc mark.prov-conflict { outline: 2px dashed var(--prov); outline-offset: 1px; }
 .provdot { color: var(--prov); font-size: 10px; margin-right: 3px; flex: none; }
+.sptnote { color: #d97706; font-size: 10px; font-weight: 700; margin-right: 3px; flex: none; cursor: help; }
 .provcard { border-left: 4px solid var(--prov, #999); padding: 6px 8px; margin: 8px 0;
   font-size: 12.5px; background: var(--bg); border-radius: 4px; }
 .provcard .navrow { margin-top: 6px; }
@@ -866,6 +878,8 @@ state.spt = state.spt || {};
 // provenance of subsection answers and project settings ({source, state}),
 // kept beside the plain values the rest of the page reads
 state.sptMeta = state.sptMeta || {};
+// subsection notes (prefill's reason it could not decide, or the engineer's)
+state.sptNotes = state.sptNotes || {};
 state.profileMeta = state.profileMeta || {};
 const SUBS = DATA.subsections || [];
 const subById = Object.fromEntries(SUBS.map(s => [s.id, s]));
@@ -1329,7 +1343,9 @@ function renderNav() {
       const tip = pk === "conflict" ? `conflict: yours ${meta.answer}, prefill now ${meta.source.now.answer}` +
         ` (${srcText(meta.source.now)}); pick keep or remove to decide`
         : pk ? `answer from ${pk === "overridden" ? "you (edited prefill)" : pk}` : "";
-      act = (pk ? `<span class="provdot prov-${pk}" title="${esc(tip)}">●</span>` : "") +
+      const note = s.governed_by ? "" : state.sptNotes[s.id];
+      act = (note ? `<span class="sptnote" title="${esc(note)}">?</span>` : "") +
+        (pk ? `<span class="provdot prov-${pk}" title="${esc(tip)}">●</span>` : "") +
         `<span class="navact">` +
         `<button data-spt-act="keep" data-spt="${s.id}" class="${v === "keep" ? "on" : v ? "" : "dflt"}" ` +
         `title="${v ? "keep" : "kept by default (no answer)"}${via}">keep</button>` +
@@ -2193,10 +2209,10 @@ document.getElementById("btnExport").onclick = () => {
     else keyed[id] = rec;
   }
   // subsection keep/remove (governed ones travel as their bracket answer)
-  for (const [sid, v] of Object.entries(state.spt)) {
+  for (const sid of new Set([...Object.keys(state.spt), ...Object.keys(state.sptNotes)])) {
     const s = subById[sid];
-    if (s) keyed[s.anchor] = { answer: v, id: sid, num: s.num, title: s.title,
-                               ...(state.sptMeta[sid] || {}) };
+    if (s) keyed[s.anchor] = { answer: state.spt[sid] || "", notes: state.sptNotes[sid] || "",
+                               id: sid, num: s.num, title: s.title, ...(state.sptMeta[sid] || {}) };
   }
   const payload = { schema: "specgen.answers/2",
     section: DATA.section, title: DATA.title,
@@ -2227,20 +2243,25 @@ document.getElementById("fileImport").onchange = ev => {
     state.answers = {}; state.edits = {};
     const byAnchor = Object.fromEntries(ds.map(d => [d.anchor, d.id]));
     let orphans = 0;
-    state.spt = {};
-    const governedImports = [];
+    state.spt = {}; state.sptNotes = {};
+    const governedImports = [], governedNotes = [];
     for (const [k, v] of Object.entries(data.answers || {})) {
       if (k.startsWith("ME@")) { state.edits[k] = v; continue; }
       if (k.includes("#spt:")) {
         const s = subByAnchor[k];
         if (!s) { orphans++; continue; }
-        const val = String((v && typeof v === "object" ? v.answer : v) || "").trim().toLowerCase();
-        if (val !== "keep" && val !== "remove") continue;
-        if (s.governed_by) governedImports.push([s.governed_by, val === "remove" ? "delete" : "keep", v]);
-        else {
+        const { value: val, notes, meta } = readSptImport(v);
+        if (s.governed_by) {
+          if (val) governedImports.push([s.governed_by, val === "remove" ? "delete" : "keep", v]);
+          else if (notes) governedNotes.push([s.governed_by, notes]);
+          continue;
+        }
+        // a note travels even when the subsection is unanswered (prefill's
+        // "needs bod.heat_recovery"), as it does through generate
+        if (notes) state.sptNotes[s.id] = notes;
+        if (val) {
           state.spt[s.id] = val;
-          if (v && v.source)
-            state.sptMeta[s.id] = { source: v.source, ...(v.state ? { state: v.state } : {}) };
+          if (meta) state.sptMeta[s.id] = meta;
         }
         continue;
       }
@@ -2259,6 +2280,11 @@ document.getElementById("fileImport").onchange = ev => {
         ...(state.answers[brk] || {}), answer: val,
         ...(v && v.source ? { source: v.source } : {}), ...(v && v.state ? { state: v.state } : {}),
       };
+    // an unanswered governed subsection's note goes on its bracket, as in generate
+    for (const [brk, notes] of governedNotes) {
+      const cur = state.answers[brk] || {};
+      if (!brkAnswerOf(brk) && !cur.notes) state.answers[brk] = { ...cur, answer: cur.answer || "", notes };
+    }
     editUndo = []; editRedo = [];
     staleEditsDropped = pruneStaleEdits();
     takeSnap();  // imported answers are not edits
@@ -2268,7 +2294,7 @@ document.getElementById("fileImport").onchange = ev => {
 };
 document.getElementById("btnClear").onclick = () => {
   if (confirm("Clear every answer on this page?")) {
-    state = { profile: {}, answers: {}, edits: {}, spt: {}, sptMeta: {}, profileMeta: {},
+    state = { profile: {}, answers: {}, edits: {}, spt: {}, sptMeta: {}, sptNotes: {}, profileMeta: {},
       view: state.view || "redline", navOpen: state.navOpen };
     overrideIds.clear(); meCardId = null; sptOpen.clear();
     editUndo = []; editRedo = [];
