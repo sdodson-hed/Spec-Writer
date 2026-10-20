@@ -25,7 +25,8 @@ from . import secfile
 from .anchors import section_anchors
 from .answers import PLURAL_KEY, UNITS_KEY, resolve_answer_keys
 from .errors import GenerateError  # noqa: F401  (re-exported for callers)
-from .manifest import section_subsections
+from .cleanup import plan_cleanup
+from .manifest import build_manifest, section_subsections
 from .scan import (
     additive_join,
     connector_runs,
@@ -45,7 +46,19 @@ _WS_RE = re.compile(r"\s+")
 # subsections through the edit passes. Never present in a master (checked
 # across the WBDG corpus) and never in any output (verified before writing).
 _SPT_MARK = "sg-spt"
-_SPT_MARK_RE = re.compile(r' sg-spt="SPT-\d+"')
+# Same idea for removal cleanup targets (submittal items, reference entries,
+# SD headings, organization blocks): value is the index into the plan.
+_CLN_MARK = "sg-cln"
+_SPT_MARK_RE = re.compile(r' sg-(?:spt|cln)="[^"]*"')
+_CLEANUP_TAG = {
+    "submittal-item": "<ITM", "reference": "<RID",
+    "sd-heading": "<LST", "reference-org": "<REF",
+}
+_TRAIL_RE = re.compile(r"(?:\s|<BRK/>)*")
+# redline kinds that are consequences, not bracket decisions: kept out of
+# the "resolved" count and the per-decision section of .redline.md
+_CLEANUP_KINDS = ("submittal-item", "reference", "sd-heading", "reference-org")
+_NOT_DECISIONS = ("tailoring", "subsection", *_CLEANUP_KINDS)
 
 
 def _removed_ancestor(spts: dict, sid: str, removed: set) -> str | None:
@@ -55,6 +68,26 @@ def _removed_ancestor(spts: dict, sid: str, removed: set) -> str | None:
             return p
         p = spts[p]["parent"]
     return None
+
+
+def _cleanup_entry(act: dict, action: str, before: str = "") -> dict:
+    entry = {
+        "id": act["id"],
+        "kind": act["kind"],
+        "name": act["name"],
+        "action": action,
+        "answer": "",
+        "notes": "",
+        "source": "cleanup",
+        "caused_by": act["caused_by"],
+        "before": before,
+        "after": "",
+    }
+    if act.get("reviewer"):
+        entry["reviewer"] = act["reviewer"]
+    if act.get("rids"):
+        entry["rids"] = act["rids"]
+    return entry
 
 
 def _spt_entry(s: dict, action: str, rec: dict | None, source: str, **extra) -> dict:
@@ -291,11 +324,36 @@ def generate(
             )
         else:
             spt_effective[sid] = rec
-    for s in sorted(subsections, key=lambda s: -s["src"][0]):
-        at = s["src"][0]
-        if not src.startswith("<SPT", at):
-            raise GenerateError(f"internal error: {s['id']} span does not start at <SPT")
-        src = src[: at + 4] + f' {_SPT_MARK}="{s["id"]}"' + src[at + 4 :]
+
+    # Removal cleanup (step 4): submittal items, reference entries, emptied
+    # SD headings and organization blocks whose only body uses sit inside
+    # the subsections being removed. Planned in master coordinates; each
+    # target gets its own tracking marker, removed in the structural pass.
+    removing = {
+        sid: tuple(spts[sid]["src"]) for sid, rec in spt_effective.items()
+        if rec["answer"] == "remove"
+    }
+    for s in subsections:  # governed: removed through its bracket's delete
+        brk = s.get("governed_by")
+        if brk and str(answers.get(brk, {}).get("answer", "")).strip().lower() == "delete":
+            removing[s["id"]] = tuple(s["src"])
+    removing = {
+        sid: sp for sid, sp in removing.items()
+        if not any(o[0] <= sp[0] and sp[1] <= o[1] and o != sp for o in removing.values())
+    }
+    cleanup = (
+        plan_cleanup(master_sec, build_manifest(master_sec), removing)
+        if removing else {"remove": [], "blocked": [], "section_refs_dropped": []}
+    )
+
+    marks = [(s["src"][0], "<SPT", f' {_SPT_MARK}="{s["id"]}"') for s in subsections]
+    for i, act in enumerate(cleanup["remove"]):
+        tag = _CLEANUP_TAG[act["kind"]]
+        marks.append((act["src"][0], tag, f' {_CLN_MARK}="{i}"'))
+    for at, tag, attr in sorted(marks, key=lambda t: -t[0]):
+        if not src.startswith(tag, at):
+            raise GenerateError(f"internal error: marker target at {at} is not {tag}")
+        src = src[: at + len(tag)] + attr + src[at + len(tag) :]
 
     rev = src
     groups, stream, offs = scan_groups(src)
@@ -691,6 +749,79 @@ def generate(
         for start, end in sorted(rspans, key=lambda sp: -sp[0]):
             rev = rev[:start] + "<DEL>" + rev[start:end] + "</DEL>" + rev[end:]
 
+    # --- removal cleanup (step 4): remove the marked targets that are still
+    # present, with the <BRK/>/whitespace run after each; DEL in revisions ---
+    def _cln_spans(text: str) -> dict[int, tuple[int, int, bool]]:
+        t = secfile.parse_source(text, tolerant=True)
+        found: dict[int, tuple[int, int, bool]] = {}
+        for el in t.root.iter():
+            idx = el.attrs.get(_CLN_MARK)
+            if idx is None:
+                continue
+            end = el.src_end
+            if el.name == "RID":  # a reference entry is <RID> plus its <RTL>
+                kids = [c for c in el.parent.children if isinstance(c, secfile.Element)]
+                nxt = kids.index(el) + 1
+                if nxt < len(kids) and kids[nxt].name == "RTL":
+                    end = kids[nxt].src_end
+            in_del = any(a.name == "DEL" for a in el.ancestors())
+            found[int(idx)] = (el.src_start, _TRAIL_RE.match(text, end).end(), in_del)
+        return found
+
+    cleanup_log: list[dict] = []
+    cleanup_unresolved: list[dict] = []
+    cleaned: set[int] = set()
+    if cleanup["remove"]:
+        present_cln = _cln_spans(src)
+        for idx in sorted(present_cln, key=lambda i: -present_cln[i][0]):
+            start, end, _ = present_cln[idx]
+            act = cleanup["remove"][idx]
+            causes = ", ".join(act["caused_by"])
+            what = {
+                "sd-heading": f"removed: every item under it went with {causes}",
+                "reference-org": f"removed: none of its references is used outside {causes}",
+            }.get(act["kind"], f"removed: its only uses were in {causes}")
+            cleanup_log.append(_cleanup_entry(act, what, before=src[start:end][:200]))
+            src = src[:start] + src[end:]
+            cleaned.add(idx)
+        cleanup_log.reverse()  # removed back to front; log in document order
+        for idx, act in enumerate(cleanup["remove"]):
+            if idx not in present_cln:
+                cleanup_log.append(_cleanup_entry(act, "already removed (bracket or tailoring)"))
+        if revisions:
+            rfound = _cln_spans(rev)
+            for idx in sorted((i for i in cleaned if i in rfound and not rfound[i][2]),
+                              key=lambda i: -rfound[i][0]):
+                start, end, _ = rfound[idx]
+                rev = rev[:start] + "<DEL>" + rev[start:end] + "</DEL>" + rev[end:]
+    for b in cleanup["blocked"]:
+        brk = b["in_bracket"]
+        given = str(bracket_answers.get(brk, {}).get("answer", "")).strip().lower()
+        causes = ", ".join(b["caused_by"])
+        if given == "delete":
+            continue  # the bracket answer already removed it
+        if given:
+            cleanup_log.append(_cleanup_entry(
+                b, f"kept by answer on {brk} although its only references were removed"))
+            continue
+        note = f"its only references were removed with {causes}; consider delete ({brk})"
+        cleanup_log.append(_cleanup_entry(b, f"kept: inside {brk}; {note}"))
+        cleanup_unresolved.append(
+            {"id": b["id"], "kind": b["kind"], "options": [b["name"]], "note": note}
+        )
+    redline.extend(cleanup_log)
+    done = [cleanup["remove"][i] for i in cleaned]
+    cleanup_counts = {
+        "submittal_items_removed": sum(a["kind"] == "submittal-item" for a in done),
+        "references_removed": sum(
+            1 if a["kind"] == "reference" else len(a.get("rids", []))
+            for a in done if a["kind"] in ("reference", "reference-org")
+        ),
+        "reference_orgs_removed": sum(a["kind"] == "reference-org" for a in done),
+        "sd_headings_removed": sum(a["kind"] == "sd-heading" for a in done),
+        "section_refs_dropped": cleanup["section_refs_dropped"],
+    }
+
     kept_default = 0
     for s in subsections:
         sid, rec = s["id"], spt_effective.get(s["id"])
@@ -718,7 +849,7 @@ def generate(
         for k in ("before", "after"):
             if isinstance(c.get(k), str):
                 c[k] = _SPT_MARK_RE.sub("", c[k])
-    if _SPT_MARK in src or _SPT_MARK in rev:
+    if any(mk in text for mk in (_SPT_MARK, _CLN_MARK) for text in (src, rev)):
         raise GenerateError("internal error: subsection marker left in output")
 
     # --- rescan the OUTPUT: the unresolved report is defined by what
@@ -755,6 +886,7 @@ def generate(
             )
         unresolved.append(entry)
     unresolved.extend(orphans)
+    unresolved.extend(cleanup_unresolved)
     unresolved.extend(unresolved_edits)
 
     # --- verify before writing ---
@@ -777,12 +909,13 @@ def generate(
         "subsections_answered": len(spt_answers),
         "decisions_total": len(groups),
         "resolved": len(
-            [r for r in redline if r["kind"] not in ("tailoring", "subsection")]
+            [r for r in redline if r["kind"] not in _NOT_DECISIONS]
         ),
         "unresolved": len(unresolved),
         "tailoring_blocks_removed": removed_tai,
         "subsections_removed": len(removed_ids),
         "subsections_kept_default": kept_default,
+        **cleanup_counts,
         "units_removed": removed_units,
         "bracket_chars_remaining": src.count("[") + src.count("]"),
         "source_defects": len(master_sec.defects),
@@ -825,7 +958,7 @@ def generate(
     brk = [
         c
         for c in redline
-        if c["kind"] not in ("tailoring", "units", "subsection")
+        if c["kind"] not in ("units", *_NOT_DECISIONS)
         and PLURAL_KEY not in c["action"]
     ]
     tai = [c for c in redline if c["kind"] == "tailoring"]
@@ -872,6 +1005,28 @@ def generate(
         if summary["subsections_kept_default"]:
             md.append(
                 f"- {summary['subsections_kept_default']} subsections kept by default (no answer)"
+            )
+        md.append("")
+    cln_c = [c for c in redline if c["kind"] in _CLEANUP_KINDS]
+    if cln_c or summary["section_refs_dropped"]:
+        md += ["## Cleanup", "",
+               "_Submittal items and references whose only uses were in removed "
+               "subsections._", ""]
+        kind_label = {"submittal-item": "Submittal item", "reference": "Reference",
+                      "sd-heading": "SD heading", "reference-org": "Reference organization"}
+        for c in cln_c:
+            label = c["name"] + (f" (reviewer {c['reviewer']})" if c.get("reviewer") else "")
+            if c.get("rids"):
+                label += f" [{', '.join(c['rids'])}]"
+            where = ", ".join(spts[x]["num"] for x in c["caused_by"])
+            if c["action"].startswith("removed"):
+                md.append(f"- {kind_label[c['kind']]} {label}: removed, only used in {where}")
+            else:
+                md.append(f"- {kind_label[c['kind']]} {label}: {c['action']}")
+        if summary["section_refs_dropped"]:
+            md.append(
+                "- section references no longer cited: "
+                + ", ".join(summary["section_refs_dropped"])
             )
         md.append("")
     out_sec.with_suffix(".redline.md").write_text("\n".join(md), encoding="utf-8")
