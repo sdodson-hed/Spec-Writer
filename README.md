@@ -170,8 +170,8 @@ Missing data is never defaulted. A missing field (a condition is
 three-valued: true, false or unknown), disagreeing equipment rows, or a value
 that matches no option leaves the decision unanswered. Its note, for example
 "prefill (heat-recovery): needs bod.heat_recovery", appears on the page and in
-`.unresolved.md`. `prefill` will not overwrite an existing answers file
-without `--force`.
+`.unresolved.md`. Run `prefill` again on an existing answers file and it
+merges (next section); `--force` replaces the file instead.
 
 PyYAML reads the annotations (`requirements.txt`). On a Python with no
 prebuilt PyYAML wheel, install it with `PYYAML_FORCE_LIBYAML=0` set to get
@@ -186,6 +186,57 @@ driver, water-cooled condenser coil, cooling tower) and picks scroll,
 electric motor and air-cooled condenser coil. The project picks Air Force
 tailoring and IP units. Everything else is listed in `.prefill.md` and
 `.unresolved.md`.
+
+## Provenance and re-runs
+
+Every answer says where it came from, and the design data can change after
+the engineer has worked on the file. Each answer record carries a `source`
+and a `state`:
+
+| state | meaning |
+|---|---|
+| `auto` | written by `prefill`; follows the data on every re-run |
+| `overridden` | the engineer changed a prefilled answer; `source.kind` is `manual` and `source.was` keeps prefill's source and answer |
+| `conflict` | the data changed under an override, or under an answer given by hand: `source.now` holds what prefill says now |
+| (none) | answered by hand where prefill had nothing |
+
+Run `prefill` again on the same `-o` file and it merges. Auto answers take the
+new data. An override stays when the data it overrode is unchanged ("kept
+override"). It becomes a conflict when the data moved. If the data now gives
+the engineer's own answer, the override is marked as agreeing. Text edits
+(`ME@`) and hand answers prefill does not touch are kept. Project settings
+(`profile` with `profile_meta`) follow the same rules. The merge outcome of
+each changed record is listed in the file (`prefill.merge`) and in
+`.prefill.md`.
+
+`generate` applies neither value of a conflict. The decision stays
+unanswered, and `.unresolved.md` shows both, for example
+"conflict: engineer answer 'Air-cooled condenser coil with factory-applied
+coil coating'; prefill now '2' from ACC-1.condenser_component (derived) =
+'Water-cooled condenser'". `--strict` refuses to generate while any conflict
+is open. `.redline.json` records the source and state of each applied answer.
+
+The decision page colors each answer by source. Schedule is blue, basis of
+design teal, project rule indigo, engineer amber and default gray. An `ai`
+source gets purple, reserved for later. An override shows the engineer's
+color with prefill's value beside it, plus a Revert to prefill button. A
+conflict shows a dashed red outline, both values, and Keep mine / Take
+prefill. The header counts open conflicts, and Next unanswered visits them
+first. Editing an answer on the page stamps it as an override, so an
+exported file merges like one edited by hand.
+
+A decision that appears twice (the 23 64 10 compressor choice in the
+submittal list and in 2.4.1) is one decision. When a rule answers the later
+instance, `prefill` writes the first instance with `same_as` pointing at it.
+`generate`, the merge and the page then copy that record's answer, source
+and state, override or conflict included. Editing the first instance on the
+page drops `same_as` and makes it the engineer's own answer.
+
+`tests/test_maxwell.py` runs the whole cycle on 23 64 10: prefill, an
+engineer override of the condenser choice, a re-run on unchanged data (the
+override is kept), ACC-1 changed to `WATER-COOLED SCROLL` (the condenser
+choice becomes a conflict; 2.6.11 and 2.10.3 now stay and 2.6.10 goes), and
+`generate` leaving the conflict open. The workbook does not show provenance.
 
 ## Layout
 

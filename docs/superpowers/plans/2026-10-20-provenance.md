@@ -67,7 +67,7 @@ The spec's "provenance palette from the 2026-10-13 product discussion" is not in
 
 `merge(existing: dict, fresh: dict) -> (payload, report)` works on answers JSON payloads, applying the D3, D4 and D5 rules per anchor and per profile setting.
 
-- [ ] Tests first, each case on its own:
+- [x] Tests first, each case on its own:
   - auto replaced by new auto
   - auto replaced by a new unresolved note
   - auto dropped when no rule produces it
@@ -80,46 +80,46 @@ The spec's "provenance palette from the 2026-10-13 product discussion" is not in
   - manual answers and text edits are kept when prefill is silent
   - profile_meta follows the same rules
   - the output is deterministic
-- [ ] Implement, then commit.
+- [x] Implement, then commit.
 
 ### Task 2: `prefill` merges by default
 
-- [ ] `prefill -o existing.json` merges (D4). `--force` replaces.
-- [ ] `prefill` writes `profile_meta`.
-- [ ] `.prefill.md` gains a Merge section listing kept overrides, new conflicts, resolved conflicts and dropped auto answers.
-- [ ] Tests first (CLI round trips on the step 5 fixture), then commit.
+- [x] `prefill -o existing.json` merges (D4). `--force` replaces.
+- [x] `prefill` writes `profile_meta`.
+- [x] `.prefill.md` gains a Merge section listing kept overrides, new conflicts, resolved conflicts and dropped auto answers.
+- [x] Tests first (CLI round trips on the step 5 fixture), then commit.
 
 ### Task 3: `generate` honors provenance
 
-- [ ] A `conflict` record leaves the decision unanswered. `.unresolved.md` shows both values with their sources (D2). Duplicate propagation never fills it. Subsections and project settings are covered too. `--strict` refuses while a conflict is open.
-- [ ] `.redline.json` entries carry `source` and `state`. The issued `.sec` carries none, as the spec says.
-- [ ] Tests first, then commit.
+- [x] A `conflict` record leaves the decision unanswered. `.unresolved.md` shows both values with their sources (D2). Duplicate propagation never fills it. Subsections and project settings are covered too. `--strict` refuses while a conflict is open.
+- [x] `.redline.json` entries carry `source` and `state`. The issued `.sec` carries none, as the spec says.
+- [x] Tests first, then commit.
 
 ### Task 4: Decision page
 
-- [ ] **Pure JS in `STRUCT_CORE_JS`**, with Node tests and the same assertions run in the browser:
+- [x] **Pure JS in `STRUCT_CORE_JS`**, with Node tests and the same assertions run in the browser:
   - `stampEdits(prevAnswers, answers)`: the snapshot comparison that turns changed `auto` or `conflict` records into overrides, and new answers into `manual`.
   - `revertOverride(rec)`
   - `keepMine(rec)` and `takePrefill(rec)`
-- [ ] **Wiring.** `save()` stamps against a snapshot taken at load and after each import, so a dozen code paths need no individual changes. Subsection and profile records keep their provenance through import and export.
-- [ ] **UI:**
+- [x] **Wiring.** `save()` stamps against a snapshot taken at load and after each import, so a dozen code paths need no individual changes. Subsection and profile records keep their provenance through import and export.
+- [x] **UI:**
   - D1 colors on decision marks and outline rows, plus a legend.
   - The decision card shows the source ("from ACC-1.compressor_type = SCROLL, chiller schedule 35%, rule compressor-type").
   - Overridden: "you changed this from Scroll", with **Revert to prefill**.
   - Conflict: both values, with **Keep mine** and **Take prefill**.
   - The header gains a conflict counter, and "next unanswered" visits conflicts first.
-- [ ] Browser check on 23 64 10 with Maxwell's prefill: colors and legend, edit then revert, and a conflict made by re-running prefill with ACC-1 changed to ROTARY SCREW, resolved both ways.
-- [ ] Commit.
+- [x] Browser check on 23 64 10 with Maxwell's prefill: colors and legend, edit then revert, and a conflict made by re-running prefill with ACC-1 changed to ROTARY SCREW, resolved both ways.
+- [x] Commit.
 
 ### Task 5: Maxwell re-run scenario and docs
 
-- [ ] `tests/test_maxwell.py` gains the full round trip:
+- [x] `tests/test_maxwell.py` gains the full round trip:
   1. prefill
-  2. an engineer override of the condenser choice (an edit to the answers JSON)
+  2. an engineer override of the condenser choice (an edit to the answers JSON). As built, the override is custom text: the choice has two options, so picking Water-cooled would agree with step 4's schedule instead of conflicting with it
   3. prefill again with unchanged data: the override is kept
   4. ACC-1 changed to `WATER-COOLED SCROLL` and prefill again: the condenser choice is a conflict showing both values; 2.6.11 and 2.10.3 now stay; 2.6.10 goes
   5. `generate` leaves the conflict unresolved with both values
-- [ ] README provenance section, then the PR.
+- [x] README provenance section, then the PR.
 
 ## Not in this plan
 

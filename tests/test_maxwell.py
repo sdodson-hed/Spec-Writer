@@ -161,3 +161,90 @@ def test_every_prefill_answer_has_a_source(run):
     for rec in run["res"].payload["answers"].values():
         if rec["answer"]:
             assert rec["state"] == "auto" and rec["source"]["data_source"] == "acc-sched-35"
+
+
+# --- re-run round trip (plan 2026-10-20 provenance, Task 5) ---------------------
+#
+# The engineer overrides the condenser choice with custom text (the choice has
+# two options, so picking the other one would agree with the water-cooled
+# schedule below instead of conflicting with it).
+
+MINE = "Air-cooled condenser coil with factory-applied coil coating"
+
+
+def _rec(path, rule):
+    p = json.loads(path.read_text(encoding="utf-8"))
+    return p, next(k for k, v in p["answers"].items() if (v.get("source") or {}).get("rule") == rule
+                   or ((v.get("source") or {}).get("was") or {}).get("rule") == rule)
+
+
+@pytest.fixture(scope="module")
+def rerun(tmp_path_factory):
+    d = tmp_path_factory.mktemp("maxwell-rerun")
+    a = d / "a.json"
+    pre = ["prefill", str(MASTER), "--annotation", str(ANNOTATION), "-o", str(a)]
+    steps = {}
+
+    assert main([*pre, "--design-data", str(DESIGN)]) == 0                   # 1. prefill
+    p, key = _rec(a, "condenser")
+    rec = p["answers"][key]
+    assert rec["answer"] == "1" and rec["state"] == "auto"
+    p["answers"][key] = {**rec, "answer": MINE, "state": "overridden",        # 2. override
+                         "source": {"kind": "manual", "was": {**rec["source"], "answer": "1"}}}
+    a.write_text(json.dumps(p, indent=2), encoding="utf-8")
+
+    assert main([*pre, "--design-data", str(DESIGN)]) == 0                   # 3. unchanged data
+    steps["kept"] = json.loads(a.read_text(encoding="utf-8"))
+
+    dd = json.loads(DESIGN.read_text(encoding="utf-8"))                       # 4. schedule change
+    dd["equipment"][0]["type"] = "WATER-COOLED SCROLL"
+    (d / "dd.json").write_text(json.dumps(dd), encoding="utf-8")
+    assert main([*pre, "--design-data", str(d / "dd.json")]) == 0
+    steps["changed"] = json.loads(a.read_text(encoding="utf-8"))
+
+    profile, answers, fp = read_answers_json(a)                               # 5. generate
+    summary = generate(MASTER, profile, answers, d / "o.sec", fingerprint=fp)
+    out = secfile.parse(d / "o.sec", tolerant=True)
+    steps.update(
+        key=key, summary=summary, src=out.source,
+        titles=[WS.sub(" ", s.first("TTL").text()).strip() for s in out.root.iter("SPT")
+                if s.first("TTL") is not None],
+        unresolved=(d / "o.unresolved.md").read_text(encoding="utf-8"),
+        strict=main(["generate", str(MASTER), "--answers", str(a), "-o", str(d / "s.sec"), "--strict"]),
+    )
+    return steps
+
+
+def _outcomes(payload):
+    return {r["id"]: r["outcome"] for r in payload["prefill"]["merge"]}
+
+
+def test_rerun_with_unchanged_data_keeps_the_override(rerun):
+    rec = rerun["kept"]["answers"][rerun["key"]]
+    assert rec["answer"] == MINE and rec["state"] == "overridden"
+    assert _outcomes(rerun["kept"]) == {rec["id"]: "kept override"}   # nothing else moved
+
+
+def test_schedule_change_makes_a_conflict_with_both_values(rerun):
+    rec = rerun["changed"]["answers"][rerun["key"]]
+    assert rec["state"] == "conflict" and rec["answer"] == MINE
+    # source.value is the derived fact the rule matched, mapped from the type
+    assert rec["source"]["was"]["value"] == "Air-cooled condenser coil"
+    assert rec["source"]["now"]["value"] == "Water-cooled condenser"
+    assert rec["source"]["now"]["answer"] == "2"
+    assert _outcomes(rerun["changed"])[rec["id"]] == "conflict"
+
+
+def test_schedule_change_moves_the_condenser_subsections(rerun):
+    for title in ("Water-Cooled Condenser Coil", "Cooling Tower"):   # 2.6.11, 2.10.3 stay
+        assert _has_title(rerun, title)
+    assert not _has_title(rerun, "Air-Cooled Condenser Coil")        # 2.6.10 goes
+
+
+def test_generate_leaves_the_conflict_unresolved(rerun):
+    md = rerun["unresolved"]
+    assert (f"conflict: engineer answer {MINE!r}; prefill now '2' from "
+            f"ACC-1.condenser_component (derived) = 'Water-cooled condenser'") in md
+    assert "»[Air-cooled condenser coil][Water-cooled condenser]«" in md   # still open
+    assert MINE not in rerun["src"]                                   # neither value applied
+    assert rerun["strict"] == 1                                       # --strict refuses
