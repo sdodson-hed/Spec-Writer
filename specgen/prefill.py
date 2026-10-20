@@ -168,30 +168,39 @@ def prefill(manifest: dict, dd: DesignData, ann: Annotation) -> PrefillResult:
     report: list[dict] = []
     answers: dict[str, dict] = {}
     profile: dict[str, str] = {}
+    profile_meta: dict[str, dict] = {}  # provenance of each setting (step 7)
+
+    def setting(name: str, value: str, kind: str, ref: str, src_value) -> None:
+        profile[name] = value
+        profile_meta[name] = {"source": {"kind": kind, "ref": ref, "value": src_value},
+                              "state": "auto"}
 
     # --- project level (plan D2, D6) ---
     agency = str(dd.project["agency"]).strip().upper()
     for name in sorted(manifest.get("tailoring_options", {})):
         if name.strip().upper() in AGENCIES:
-            profile[name] = "keep" if name.strip().upper() == agency else "remove"
+            setting(name, "keep" if name.strip().upper() == agency else "remove",
+                    "rule", "project.agency", dd.project["agency"])
             report.append({"kind": "project", "setting": name, "outcome": "answered",
                            "answer": profile[name], "reason": f"project.agency = {dd.project['agency']}"})
     if manifest["counts"].get("unit_pairs"):
-        profile[UNITS_KEY] = dd.project["units"].lower()
+        setting(UNITS_KEY, dd.project["units"].lower(), "rule", "project.units",
+                dd.project["units"])
         report.append({"kind": "project", "setting": UNITS_KEY, "outcome": "answered",
                        "answer": profile[UNITS_KEY], "reason": f"project.units = {dd.project['units']}"})
     if any(d.get("plural") and not d["in_note"] for d in manifest["decisions"]):
         qty = [r.get("quantity") for r in rows]
         if rows and all(isinstance(q, (int, float)) and not isinstance(q, bool) for q in qty):
             total = sum(qty)
-            profile[PLURAL_KEY] = "keep" if total > 1 else "remove"
+            setting(PLURAL_KEY, "keep" if total > 1 else "remove", "schedule",
+                    ",".join(r["mark"] for r in rows) + ".quantity", total)
             report.append({"kind": "project", "setting": PLURAL_KEY, "outcome": "answered",
                            "answer": profile[PLURAL_KEY], "reason": f"equipment quantity = {_fmt(total)}"})
         else:
             report.append({"kind": "project", "setting": PLURAL_KEY, "outcome": "unresolved",
                            "answer": "", "reason": f"needs equipment.quantity on every {ann.schedule} row"})
     for name, action in (ann.profile or {}).items():
-        profile[name] = str(action).strip().lower()
+        setting(name, str(action).strip().lower(), "rule", "annotation profile", action)
         report.append({"kind": "project", "setting": name, "outcome": "answered",
                        "answer": profile[name], "reason": "annotation profile"})
 
@@ -293,8 +302,9 @@ def prefill(manifest: dict, dd: DesignData, ann: Annotation) -> PrefillResult:
             "section": section_number(manifest),
         },
         "profile": profile,
+        "profile_meta": profile_meta,
         "answers": answers,
-        "prefill": {"report": report},
+        "prefill": {"report": report, "merge": []},
     }
     return PrefillResult(payload=payload, report=report)
 
@@ -330,6 +340,13 @@ def report_markdown(res: PrefillResult) -> str:
         else:
             line += f"{r['outcome']}: {r['reason']}"
         md.append(line)
+    merged = p.get("prefill", {}).get("merge") or []
+    if merged:
+        md += ["", "## Merge", "",
+               "_This run was merged into an existing answers file. Engineer answers are "
+               "never replaced; a conflict keeps the engineer's answer and is not applied "
+               "until resolved on the decision page._", ""]
+        md += [f"- {r['outcome']}: {r['id'] or r['key']}: {r['detail']}" for r in merged]
     open_ = [r for r in res.report if r["outcome"] == "unresolved"]
     md += ["", "## Left for the engineer", ""]
     md += [f"- {r.get('rule') or r.get('setting')}: {r['reason']}" for r in open_] or ["- nothing"]

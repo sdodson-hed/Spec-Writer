@@ -261,11 +261,18 @@ def cmd_prefill(args) -> int:
     from .designdata import DesignDataError, load_design_data
     from .prefill import PrefillError, dumps, prefill, report_markdown
 
+    from .provenance import merge
+
     out = Path(args.out)
+    existing = None
     if out.exists() and not args.force:
-        print(f"Refusing to overwrite {out}: it may hold an engineer's edits "
-              "(rerun with --force to replace it)")
-        return 1
+        # re-run: merge into the engineer's file (overrides kept, conflicts
+        # flagged); --force replaces it instead
+        try:
+            existing = json.loads(out.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            print(f"ERROR: cannot merge into {out}: {e} (use --force to replace it)")
+            return 1
     try:
         dd = load_design_data(args.design_data)
         ann = load_annotation(args.annotation)
@@ -273,14 +280,24 @@ def cmd_prefill(args) -> int:
     except (DesignDataError, AnnotationError, PrefillError) as e:
         print(f"ERROR: {e}")
         return 1
+    merged = []
+    if existing is not None:
+        res.payload, merged = merge(existing, res.payload)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(dumps(res), encoding="utf-8")
     md = out.with_suffix(".prefill.md")
     md.write_text(report_markdown(res), encoding="utf-8")
     rules = [r for r in res.report if r["kind"] == "rule"]
     left = sum(r["outcome"] == "unresolved" for r in res.report)
-    print(f"Wrote {out} and {md.name}: {sum(r['outcome'] == 'answered' for r in rules)} of "
-          f"{len(rules)} rules answered, {left} item(s) left for the engineer")
+    msg = (f"Wrote {out} and {md.name}: {sum(r['outcome'] == 'answered' for r in rules)} of "
+           f"{len(rules)} rules answered, {left} item(s) left for the engineer")
+    if existing is not None:
+        conflicts = sum(r["outcome"] == "conflict" for r in merged)
+        msg += (f"; merged into the existing file: {conflicts} conflict(s), "
+                f"{sum(r['outcome'] == 'kept override' for r in merged)} override(s) kept, "
+                f"{sum(r['outcome'] in ('updated', 'dropped') for r in merged)} auto answer(s) "
+                f"updated or dropped")
+    print(msg)
     return 0
 
 
