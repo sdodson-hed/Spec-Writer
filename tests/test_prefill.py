@@ -142,6 +142,25 @@ def test_plural_from_quantity(rows, want):
         assert p["outcome"] == "unresolved" and "equipment.quantity" in p["reason"]
 
 
+def test_answer_reaches_the_first_instance_of_a_duplicate():
+    # 23 64 10: the 2.4.1 compressor choice (BRK-0023) is a duplicate of the
+    # same choice in the submittal list (BRK-0002). generate propagates only
+    # from the first instance, so prefill answers that one too.
+    src = MINI.replace(
+        "<SPT><TTL>SUMMARY</TTL>",
+        "<SPT><TTL>SUBMITTALS</TTL><ITM><SUB>[Scroll][Screw][Centrifugal] Type Chiller</SUB></ITM></SPT>"
+        "<SPT><TTL>SUMMARY</TTL>")
+    m, res = _run(src=src)
+    first = next(d for d in m["decisions"] if d["options"] == ["Scroll", "Screw", "Centrifugal"]
+                 and not d["duplicate_of"])
+    target = _rules(res)["compressor-type"]["target"]
+    assert target != first["id"]
+    a = _by_id(res)
+    assert a[target]["answer"] == "1" and a[first["id"]]["answer"] == "1"
+    assert a[first["id"]]["source"]["rule"] == "compressor-type"
+    assert a[first["id"]]["notes"] == f"prefill (compressor-type): same decision as {target}"
+
+
 def test_annotation_must_check_clean():
     with pytest.raises(PrefillError, match="annotate-check"):
         _run(ann=ANNOTATION.replace("HEAT RECOVERY CONDENSER COIL", "NOPE"))

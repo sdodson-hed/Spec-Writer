@@ -257,6 +257,28 @@ def prefill(manifest: dict, dd: DesignData, ann: Annotation) -> PrefillResult:
             a, b = subs[hit["id"]]["src"]
             removed.append((a, b, hit["id"]))
 
+    # Duplicates: generate copies an answer only from a decision's FIRST
+    # instance to the later ones. When a rule answered a later instance
+    # (23 64 10: the 2.4.1 compressor choice repeats the submittal list's),
+    # give the first instance the same answer so every instance follows.
+    for rec in list(answers.values()):
+        if not rec["answer"] or "options" not in rec:
+            continue
+        first_id = decisions[rec["id"]].get("duplicate_of")
+        if not first_id:
+            continue
+        first = decisions[first_id]
+        if first["anchor"] in answers or any(a <= first["offset"] < b for a, b, _ in removed):
+            continue
+        rule_id = rec["source"]["rule"]
+        answers[first["anchor"]] = {
+            **rec, "id": first_id, "options": first["options"],
+            "notes": f"prefill ({rule_id}): same decision as {rec['id']}",
+        }
+        report.append({"kind": "rule", "rule": f"{rule_id} (first instance)", "target": first_id,
+                       "label": " | ".join(first["options"]), "outcome": "answered",
+                       "answer": rec["answer"], "reason": f"same decision as {rec['id']}"})
+
     payload = {
         "schema": "specgen.answers/2",
         "section": manifest["section"],
