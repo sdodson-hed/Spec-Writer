@@ -1,118 +1,65 @@
-"""End-to-end demo: fill the 23 64 10 answer workbook with the Maxwell AFB
-design values (air-cooled chiller, electric drive, AFCEC/Air Force project)
+"""End-to-end demo: answer UFGS 23 64 10 for Maxwell AFB from its design data
 and generate the tailored section.
 
-This plays the role the Hedral platform (or the partner firm's engineer)
-will play: producing answers. Everything downstream is the real pipeline.
-Duplicate decisions are answered once (propagation handles the rest);
-plural [s] markers are answered once on the Profile sheet.
+    prefill  projects/maxwell/design-data.json (ACC-1, 35% chiller schedule)
+             + annotations/23 64 10.yaml
+             -> out/maxwell-demo/23_64_10.answers.json  (+ .prefill.md)
+    generate masters/23 64 10.SEC with those answers, --strict --revisions
+             -> out/maxwell-demo/23_64_10.sec, .revisions.sec, .redline.md,
+                .redline.json, .unresolved.md
+
+Nothing is hand-coded here: every answer comes from the schedule through the
+annotation, with its source recorded. What the data cannot answer (heat
+recovery, plural markers, the spec table's "Confirm" rows, the rest of the
+section's engineering choices) stays in .unresolved.md for the engineer, or
+open on the decision page:
+
+    python -m specgen html "masters/23 64 10.SEC" -o out/maxwell-demo/23_64_10.html
+
+then Import answers -> out/maxwell-demo/23_64_10.answers.json.
 """
 
-import json
 import sys
 from pathlib import Path
 
-from openpyxl import load_workbook
-
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from specgen.answers import PLURAL_KEY  # noqa: E402
 
-MANIFEST = ROOT / "out" / "23 64 10.manifest.json"
-WORKBOOK = ROOT / "out" / "23 64 10.answers.xlsx"
-FILLED = ROOT / "out" / "23 64 10.answers.maxwell.xlsx"
+from specgen import secfile  # noqa: E402
+from specgen.annotation import load_annotation  # noqa: E402
+from specgen.answers import read_answers_json  # noqa: E402
+from specgen.designdata import load_design_data  # noqa: E402
+from specgen.generate import generate  # noqa: E402
+from specgen.manifest import build_manifest  # noqa: E402
+from specgen.prefill import dumps, prefill, report_markdown  # noqa: E402
 
-m = json.loads(MANIFEST.read_text(encoding="utf-8"))
-answers: dict[str, str] = {}
+MASTER = ROOT / "masters" / "23 64 10.SEC"
+DESIGN = ROOT / "projects" / "maxwell" / "design-data.json"
+ANNOTATION = ROOT / "annotations" / "23 64 10.yaml"
+OUT = ROOT / "out" / "maxwell-demo"
 
 
-def match(d, *needles):
-    joined = " || ".join(d["options"]).lower()
-    return all(n.lower() in joined for n in needles)
+def main() -> int:
+    OUT.mkdir(parents=True, exist_ok=True)
+    res = prefill(build_manifest(secfile.parse(MASTER, tolerant=True)),
+                  load_design_data(DESIGN), load_annotation(ANNOTATION))
+    answers_path = OUT / "23_64_10.answers.json"
+    answers_path.write_text(dumps(res), encoding="utf-8")
+    (OUT / "23_64_10.answers.prefill.md").write_text(report_markdown(res), encoding="utf-8")
+    rules = [r for r in res.report if r["kind"] == "rule"]
+    print(f"prefill: {sum(r['outcome'] == 'answered' for r in rules)} of {len(rules)} rules "
+          f"answered from {DESIGN.relative_to(ROOT)}")
+
+    profile, answers, fingerprint = read_answers_json(answers_path)
+    s = generate(MASTER, profile, answers, OUT / "23_64_10.sec", revisions=True,
+                 fingerprint=fingerprint, strict=True)
+    print(f"generate: {s['subsections_removed']} subsections removed, "
+          f"{s['tailoring_blocks_removed']} tailoring blocks removed, "
+          f"{s['submittal_items_removed']} submittal items and {s['references_removed']} "
+          f"references cleaned up, {s['unresolved']} decisions left for the engineer")
+    print(f"outputs in {OUT.relative_to(ROOT)}")
+    return 0
 
 
-for d in m["decisions"]:
-    if d["in_note"] or d.get("plural") or d.get("duplicate_of"):
-        continue  # duplicates auto-follow the first instance
-    gid, kind, opts = d["id"], d["kind"], d["options"]
-    if kind == "choice" and match(d, "air-cooled condenser coil", "water-cooled"):
-        answers[gid] = "1"  # air-cooled machine
-    elif kind == "choice" and match(d, "electric motor", "gas-engine"):
-        answers[gid] = "1"  # electric drive
-    elif kind == "choice" and match(d, "scroll", "reciprocating", "rotary screw"):
-        answers[gid] = "1"  # scroll compressors
-    elif kind == "choice" and opts[:1] == ["10"] and match(d, "10", "___"):
-        answers[gid] = "1"  # minimum stable load: 10 percent
-    elif kind == "choice" and match(d, "4.4", "minus 17.7"):
-        answers[gid] = "1"  # low ambient limit 4.4 degC
-    elif kind == "choice" and match(d, "40", "zero") and len(opts) == 3:
-        answers[gid] = "1"  # low ambient limit 40 degF
-    elif kind == "choice" and match(d, "heat recovery condenser", "receiver"):
-        answers[gid] = "delete"  # no heat recovery / receiver / economizer
-
-print(f"Answering {len(answers)} unique decisions "
-      f"(duplicates and plural [s] handled by propagation/profile)")
-
-wb = load_workbook(str(WORKBOOK))
-ws = wb["Answers"]
-head = {str(c.value).strip().lower(): i for i, c in enumerate(ws[1], 1) if c.value}
-hit = 0
-for row in ws.iter_rows(min_row=2):
-    gid = row[head["id"] - 1].value
-    if gid in answers:
-        row[head["answer"] - 1].value = answers[gid]
-        row[head["notes"] - 1].value = "Maxwell demo: from chiller schedule"
-        hit += 1
-assert hit == len(answers), (hit, len(answers))
-
-ps = wb["Profile"]
-profile = {
-    "ARMY": "remove",
-    "NAVY": "remove",
-    "AIR FORCE,NAVY": "keep",
-    PLURAL_KEY: "keep",  # two chillers on the project
-}
-for row in ps.iter_rows(min_row=2):
-    if row[0].value in profile:
-        row[3].value = profile[row[0].value]
-
-# Subsections removed by rule from the ACC-1 schedule (air-cooled scroll,
-# electric drive): the "Rule" rows of the Maxwell table in
-# docs/superpowers/specs/2026-10-13-design-data-annotations-design.md.
-# The spec's "Confirm" rows (2.4.3-2.4.7, 2.6.14, 2.7.4) wait for an
-# engineer's sign-off and stay unanswered. Matched by number AND title, so a
-# renumbered master fails here instead of removing the wrong subsection.
-REMOVE = {
-    "2.4.2": "Centrifugal Type Water Chiller",      # compressor type is scroll
-    "2.5": "SPLIT-SYSTEM WATER CHILLER",            # packaged air-cooled unit
-    "2.6.5.2": "Rotary Screw Compressor",
-    "2.6.5.3": "Centrifugal Compressor",
-    "2.6.7": "Compressor Driver, Gas-Engine",       # electric drive
-    "2.6.11": "Water-Cooled Condenser Coil",        # condenser = air-cooled
-    "2.10.3": "Cooling Tower",                      # condenser = air-cooled
-}
-ss = wb["Subsections"]
-shead = {str(c.value).strip().lower(): i for i, c in enumerate(ss[1]) if c.value}
-found = set()
-for row in ss.iter_rows(min_row=2):
-    num = row[shead["number"]].value
-    if num in REMOVE:
-        title = str(row[shead["title"]].value).strip()
-        assert title.startswith(REMOVE[num]), (num, title)
-        row[shead["action"]].value = "remove"
-        found.add(num)
-assert found == set(REMOVE), sorted(set(REMOVE) - found)
-print(f"Removing {len(found)} subsections by rule: {', '.join(sorted(found))}")
-
-target = FILLED
-try:
-    wb.save(str(target))
-except PermissionError:  # workbook open in Excel — write a versioned copy
-    for n in range(2, 20):
-        target = FILLED.with_name(f"{FILLED.stem}-v{n}{FILLED.suffix}")
-        try:
-            wb.save(str(target))
-            break
-        except PermissionError:
-            continue
-print(f"Wrote {target.name}")
+if __name__ == "__main__":
+    sys.exit(main())

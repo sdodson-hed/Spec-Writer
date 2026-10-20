@@ -21,9 +21,14 @@ tailoring option, submittal, and reference a section demands of a specifier.
 - Subsection decisions: every `<SPT>` (40,965 across the WBDG release) can be
   kept or removed, with the same guarantees as bracket decisions. Removing
   every 5th subsection in all 430 well-formed WBDG masters passes generate's
-  verification. Maxwell 23 64 10 with the 7 rule-based removals goes from
-  102 to 65 unresolved decisions, and cleanup drops the 2 submittal items
-  and 12 references that only those subsections used.
+  verification. Cleanup drops the submittal items and references only
+  removed subsections used.
+- Design data drives Maxwell 23 64 10 end to end: `prefill` with
+  `annotations/23 64 10.yaml` and the ACC-1 schedule answers 13 of 14 rules
+  (7 subsections removed, compressor/driver/condenser chosen, ARMY and NAVY
+  tailoring removed, IP units), and `generate` leaves 80 decisions for the
+  engineer (102 before, with 8 hand-picked answers), checked against the
+  spec's table by `tests/test_maxwell.py`.
 - Additive bracket lists: choice groups that are select-any lists
   ("[ single pole][, double pole][, and four-way]") render as checkboxes;
   connector-only spans ("[ or ]") are joiners, never options; kept items
@@ -172,12 +177,15 @@ PyYAML reads the annotations (`requirements.txt`). On a Python with no
 prebuilt PyYAML wheel, install it with `PYYAML_FORCE_LIBYAML=0` set to get
 the pure-Python build.
 
-Demo: `python scripts/maxwell_demo.py` fills the 23 64 10 workbook with the
-Maxwell AFB values (air-cooled, electric drive, scroll, Air Force tailoring)
-and removes the 7 subsections the ACC-1 schedule rules out (centrifugal,
-split-system, screw and centrifugal compressors, gas-engine driver,
-water-cooled condenser coil, cooling tower); the `generate` run above
-produces the draft section.
+Demo: `python scripts/maxwell_demo.py` runs `prefill` on 23 64 10 with
+`projects/maxwell/design-data.json` and `annotations/23 64 10.yaml`, then
+`generate --strict --revisions`, into `out/maxwell-demo/`. Nothing is
+hand-coded. The ACC-1 schedule removes the 7 subsections it rules out
+(centrifugal, split-system, screw and centrifugal compressors, gas-engine
+driver, water-cooled condenser coil, cooling tower) and picks scroll,
+electric motor and air-cooled condenser coil. The project picks Air Force
+tailoring and IP units. Everything else is listed in `.prefill.md` and
+`.unresolved.md`.
 
 ## Layout
 
