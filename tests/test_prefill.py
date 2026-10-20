@@ -177,8 +177,9 @@ def test_output_is_deterministic_and_loads(tmp_path):
     args = ["prefill", str(master), "--design-data", str(ddf), "--annotation", str(annf), "-o", str(out)]
     assert main(args) == 0
     first = out.read_bytes()
-    assert main(args) == 1                     # refuses to overwrite (D5)
-    assert main(args + ["--force"]) == 0
+    assert main(args) == 0                     # re-run merges (step 7 D4)
+    assert out.read_bytes() == first
+    assert main(args + ["--force"]) == 0       # --force replaces
     assert out.read_bytes() == first           # byte-identical rerun
     report = (tmp_path / "m.answers.prefill.md").read_text(encoding="utf-8")
     assert "heat-recovery" in report and "needs bod.heat_recovery" in report

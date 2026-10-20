@@ -43,7 +43,7 @@ def test_subsection_note_kept_by_default_and_listed(tmp_path):
     summary, md, ch, out = _gen(tmp_path, {s["anchor"]: {"answer": "", "notes": note, "id": s["id"]}},
                                 strict=True)
     assert "Heat recovery text." in out                      # kept by default
-    assert (ch[s["id"]]["action"], ch[s["id"]]["source"]) == ("kept by default", "default")
+    assert (ch[s["id"]]["action"], ch[s["id"]]["source"]["kind"]) == ("kept by default", "default")
     assert ch[s["id"]]["notes"] == note
     block = md.split(f"## {s['id']}", 1)[1].split("## ", 1)[0]
     assert "subsection" in block and note in block and "kept by default until answered" in block

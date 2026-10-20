@@ -314,6 +314,14 @@ def read_answers_json(
                 for k in ("num", "title"):
                     if isinstance(v.get(k), str) and v[k].strip():
                         rec[k] = v[k].strip()
+                # provenance (step 7): where the answer came from, and
+                # whether the engineer overrode it or it is in conflict
+                if isinstance(v.get("source"), dict):
+                    rec["source"] = v["source"]
+                if v.get("state") in ("auto", "overridden", "conflict"):
+                    rec["state"] = v["state"]
+                if isinstance(v.get("same_as"), str) and v["same_as"].strip():
+                    rec["same_as"] = v["same_as"].strip()
             answers[key] = rec
     return profile, answers, fingerprint
 
@@ -380,11 +388,13 @@ def resolve_answer_keys(
     spt_out: dict[str, dict] = {}
     source_key: dict[str, str] = {}
     orphans: list[dict] = []
+    conflicts = 0  # step 7: answers in "conflict" state, applied as unanswered
 
     def _label(rec: dict) -> list[str]:
         label = " ".join(p for p in (rec.get("num"), rec.get("title")) if p)
         return [label] if label else []
 
+    answers = _follow_same_as(answers)
     for key, rec in answers.items():
         if key.startswith("ME@"):
             out[key] = rec
@@ -408,6 +418,12 @@ def resolve_answer_keys(
             if sid in source_key:
                 raise GenerateError(f"two answers for {sid}: {source_key[sid]}, {key}")
             source_key[sid] = key
+            if rec.get("state") == "conflict":
+                # step 7 D2: neither the engineer's nor prefill's value
+                # applies until resolved; kept by default and listed
+                conflicts += 1
+                spt_out[sid] = {**rec, "answer": "", "notes": _conflict_note(rec)}
+                continue
             value = str(rec.get("answer", "")).strip().lower()
             if not value:
                 # unanswered (e.g. prefill could not decide): kept by default;
@@ -450,6 +466,12 @@ def resolve_answer_keys(
                 f"two answers for {gid}: {source_key[gid]}, {key}"
             )
         source_key[gid] = key
+        if rec.get("state") == "conflict":
+            # step 7 D2: leave the bracket unanswered with both values shown;
+            # "conflict" also stops duplicate propagation from filling it
+            conflicts += 0 if rec.get("same_as") else 1  # one decision, one conflict
+            out[gid] = {**rec, "answer": "", "conflict": _conflict_note(rec)}
+            continue
         out[gid] = rec
 
     # Governed subsections (plan D1): "[<SPT>...</SPT>]" is ONE decision. The
@@ -479,6 +501,11 @@ def resolve_answer_keys(
                             f"applied",
             }
 
+    if strict and conflicts:
+        raise GenerateError(
+            f"{conflicts} conflict(s) between engineer answers and current design "
+            f"data; resolve them on the decision page (keep mine / take prefill)"
+        )
     if strict and orphans:
         raise GenerateError(
             f"{len(orphans)} answer(s) not applied (master changed, or an "
@@ -496,6 +523,50 @@ def resolve_answer_keys(
     else:
         status = "MISMATCH (forced)"
     return out, orphans, status
+
+
+def _follow_same_as(answers: dict[str, dict]) -> dict[str, dict]:
+    """A record prefill wrote for a duplicate's first instance (same_as: the
+    BRK id of the instance a rule answered) takes that record's answer,
+    source and state, so an override or a conflict reaches every instance.
+    The target missing or unanswered leaves the first instance unanswered.
+    To answer the first instance on its own, drop its same_as."""
+    key_of = {r["id"]: k for k, r in answers.items()
+              if not k.startswith("ME@") and isinstance(r, dict) and r.get("id")}
+    out = {}
+    for key, rec in answers.items():
+        if key.startswith("ME@") or not rec.get("same_as"):
+            out[key] = rec
+            continue
+        t = answers.get(key_of.get(rec["same_as"])) or {}
+        if not str(t.get("answer", "")).strip():
+            continue  # the decision was cleared: so is its copy
+        out[key] = {**{k: v for k, v in t.items() if k not in ("id", "options", "notes")},
+                    **{k: rec[k] for k in ("id", "options", "notes", "same_as") if k in rec}}
+    return out
+
+
+def _conflict_note(rec: dict) -> str:
+    from .provenance import describe_conflict
+
+    now = (rec.get("source") or {}).get("now") or {}
+    return "conflict: " + describe_conflict(rec.get("answer", ""), now)
+
+
+def read_profile_conflicts(path: Path | str) -> dict[str, str]:
+    """Project settings in conflict (profile_meta state "conflict"), each with
+    its note. read_answers leaves them out of the profile, so they are
+    unanswered; generate lists them for review."""
+    import json
+
+    if not str(path).lower().endswith(".json"):
+        return {}
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    return {
+        name: _conflict_note(meta)
+        for name, meta in (data.get("profile_meta") or {}).items()
+        if isinstance(meta, dict) and meta.get("state") == "conflict"
+    }
 
 
 def read_answers(

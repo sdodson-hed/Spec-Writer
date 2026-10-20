@@ -51,7 +51,7 @@ def test_engine_removal_cleans_up(tmp_path):
 
     gas = ch[("submittal-item", "Gas Engine")]
     assert gas["action"] == f"removed: its only uses were in {engine}"
-    assert gas["reviewer"] == "G, [_____]" and gas["source"] == "cleanup"
+    assert gas["reviewer"] == "G, [_____]" and gas["source"] == {"kind": "cleanup"}
     assert ch[("reference-org", "NFPA")]["rids"] == ["NFPA 37"]
     assert ch[("reference", "AHRI 450")]["caused_by"] == [engine]
     blocked = ch[("submittal-item", "Field Test Plan")]
