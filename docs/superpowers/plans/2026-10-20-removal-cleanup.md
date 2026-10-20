@@ -26,9 +26,12 @@ Corpus, removing every 5th non-governed subsection in all 431 masters:
 | ... orphaned and carrying a G/S reviewer code | 1,759 |
 | declared references | 12,759 |
 | ... used in the body | 12,758 |
-| ... orphaned by the removals | 3,969 |
+| ... orphaned by the removals (Task 2 planner) | 622 single entries plus 100 whole organization blocks |
 | ... orphaned and inside a bracket group | 0 |
+| SD headings emptied | 278 |
 | section cross-references dropped entirely | 563 |
+
+The first draft of this table said 3,969 references. The survey script behind that number also counted references declared inside a removed REFERENCES subsection. Those go with the subsection, so cleanup never acts on them. The planner's count is the right one.
 
 A submittal item is matched to its body uses by the normalized text of its first `<SUB>`: whitespace collapsed, case-insensitive. A reference is matched by its `<RID>` text. The 68 items with no body use in the master are never touched, because cleanup only acts on items that had uses and lost all of them.
 
