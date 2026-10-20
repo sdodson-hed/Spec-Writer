@@ -72,3 +72,27 @@ def section_anchors(sec) -> dict[str, str]:
     from .manifest import location_index
 
     return assign_anchors(scan_groups(sec.source)[0], location_index(sec.root))
+
+
+def spt_ids(locs) -> list[tuple[str, object]]:
+    """(SPT-NNNN, loc) for every <SPT> in document order."""
+    spts = [s for s in locs if s.name == "SPT"]
+    return [(f"SPT-{i:04d}", s) for i, s in enumerate(spts, 1)]
+
+
+def assign_spt_anchors(locs) -> dict[str, str]:
+    """SPT-NNNN -> <path>#spt:<hash8>[~n]. The path ends with the
+    subsection's own title; the hash covers that normalized title only."""
+    seen: Counter[str] = Counter()
+    out: dict[str, str] = {}
+    for sid, s in spt_ids(locs):
+        base = f"{group_path(locs, s.start)}#spt:{option_hash([norm_title(s.title)])}"
+        seen[base] += 1
+        out[sid] = base if seen[base] == 1 else f"{base}~{seen[base]}"
+    return out
+
+
+def section_spt_anchors(sec) -> dict[str, str]:
+    from .manifest import location_index
+
+    return assign_spt_anchors(location_index(sec.root))

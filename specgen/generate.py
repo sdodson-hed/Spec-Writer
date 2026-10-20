@@ -25,6 +25,7 @@ from . import secfile
 from .anchors import section_anchors
 from .answers import PLURAL_KEY, UNITS_KEY, resolve_answer_keys
 from .errors import GenerateError  # noqa: F401  (re-exported for callers)
+from .manifest import section_subsections
 from .scan import (
     additive_join,
     connector_runs,
@@ -39,6 +40,37 @@ from .scan import (
 )
 
 _WS_RE = re.compile(r"\s+")
+
+# Temporary attribute generate puts on every <SPT> open tag to track
+# subsections through the edit passes. Never present in a master (checked
+# across the WBDG corpus) and never in any output (verified before writing).
+_SPT_MARK = "sg-spt"
+_SPT_MARK_RE = re.compile(r' sg-spt="SPT-\d+"')
+
+
+def _removed_ancestor(spts: dict, sid: str, removed: set) -> str | None:
+    p = spts[sid]["parent"]
+    while p:
+        if p in removed:
+            return p
+        p = spts[p]["parent"]
+    return None
+
+
+def _spt_entry(s: dict, action: str, rec: dict | None, source: str, **extra) -> dict:
+    return {
+        "id": s["id"],
+        "kind": "subsection",
+        "action": action,
+        "answer": (rec or {}).get("answer", ""),
+        "notes": (rec or {}).get("notes", ""),
+        "source": source,
+        "num": s["num"],
+        "title": s["title"],
+        "before": "",
+        "after": "",
+        **extra,
+    }
 
 
 def _strip_revisions(source: str, drop: str, unwrap: str) -> str:
@@ -226,18 +258,49 @@ def generate(
     # (orphans are reported, applied to nothing); BRK keys still go through
     # the stale-fingerprint gate (issue #23). See answers.resolve_answer_keys.
     groups0 = scan_groups(src)[0]
+    subsections = section_subsections(master_sec)
     answers, orphans, fp_status = resolve_answer_keys(
         answers, groups0, section_anchors(master_sec), fingerprint,
-        force_stale=force_stale, strict=strict,
+        force_stale=force_stale, strict=strict, subsections=subsections,
     )
+    # subsection keep/remove answers (SPT-NNNN); governed ones were already
+    # turned into their bracket's answer by resolve_answer_keys
+    spt_answers = {k: v for k, v in answers.items() if k.startswith("SPT-")}
+    answers = {k: v for k, v in answers.items() if not k.startswith("SPT-")}
     if revisions and re.search(r"<(?:DEL|ADD)[\s>/]", src):
         raise GenerateError(
             "master already contains <DEL>/<ADD> revision markup; "
             "accept or reject its revisions in SI Editor before generating "
             "with --revisions"
         )
+    # Subsection decisions (step 3). Answers on subsections inside a removed
+    # ancestor are ignored and logged. Then EVERY <SPT> gets a tracking
+    # attribute on its open tag; the bracket, tailoring and units passes
+    # below move it along with the tag, so after them the structural pass
+    # can see exactly which subsections survived, remove the answered ones,
+    # and log the rest. All markers are stripped before verification.
+    spts = {s["id"]: s for s in subsections}
+    structure_log: list[dict] = []
+    asked_remove = {sid for sid, r in spt_answers.items() if r["answer"] == "remove"}
+    spt_effective: dict[str, dict] = {}
+    for sid, rec in spt_answers.items():
+        anc = _removed_ancestor(spts, sid, asked_remove)
+        if anc:
+            structure_log.append(
+                _spt_entry(spts[sid], f"ignored: inside removed {anc}", rec, "answer")
+            )
+        else:
+            spt_effective[sid] = rec
+    for s in sorted(subsections, key=lambda s: -s["src"][0]):
+        at = s["src"][0]
+        if not src.startswith("<SPT", at):
+            raise GenerateError(f"internal error: {s['id']} span does not start at <SPT")
+        src = src[: at + 4] + f' {_SPT_MARK}="{s["id"]}"' + src[at + 4 :]
+
     rev = src
     groups, stream, offs = scan_groups(src)
+    if len(groups) != len(groups0):
+        raise GenerateError("internal error: subsection markers changed the bracket scan")
     by_id = {g.gid: g for g in groups}
 
     me_edits_in = {k: v for k, v in answers.items() if k.startswith("ME@")}
@@ -339,6 +402,7 @@ def generate(
         propagated = ""
         if (
             not entry.get("answer")
+            and not entry.get("conflict")  # a conflict is never filled in
             and g.gid in dups
             and dups[g.gid] in bracket_answers
         ):
@@ -359,13 +423,10 @@ def generate(
         if not ans or (
             low == "keep" and g.kind not in ("optional", "submittal-review")
         ):
-            unresolved.append(
-                {
-                    "id": g.gid,
-                    "kind": g.kind,
-                    "options": [o.text for o in g.options],
-                }
-            )
+            u = {"id": g.gid, "kind": g.kind, "options": [o.text for o in g.options]}
+            if entry.get("conflict"):
+                u["note"] = entry["conflict"]
+            unresolved.append(u)
             continue
 
         if not g.safe:
@@ -445,6 +506,8 @@ def generate(
         src = src[: g.src_start] + after + src[g.src_end :]
         if propagated:
             action += f" (propagated from {propagated})"
+        if entry.get("via"):  # answered on its governed subsection row
+            action += f" (via {entry['via']})"
         redline.append(
             {
                 "id": g.gid,
@@ -566,6 +629,98 @@ def generate(
                 }
             )
 
+    # --- subsection removal (on the edited source, spec 2026-10-13 sec. 3) ---
+    tree = secfile.parse_source(src, tolerant=True)
+    present = {
+        el.attrs[_SPT_MARK]: (el.src_start, el.src_end)
+        for el in tree.root.iter("SPT")
+        if _SPT_MARK in el.attrs
+    }
+    to_remove = sorted(
+        (present[sid], sid)
+        for sid, rec in spt_effective.items()
+        if rec["answer"] == "remove" and sid in present
+    )
+    removed_ids = {sid for _span, sid in to_remove}
+
+    def _gone_reason(s: dict) -> str:
+        # what removed a subsection before the structural pass ran
+        tai = s.get("tailoring")
+        if tai and all(profile.get(n.strip()) == "remove" for n in tai.split(",")):
+            return f"tailoring {tai}"
+        enclosing = [
+            g for g in groups0
+            if g.src_start < s["src"][0] and s["src"][1] <= g.src_end
+        ]
+        for g in sorted(enclosing, key=lambda g: g.src_end - g.src_start):
+            # a bracket that kept its text did not remove the subsection
+            if any(c["id"] == g.gid and not c["action"].startswith("kept")
+                   for c in redline):
+                return g.gid
+        return "an enclosing edit"
+
+    superseded: dict[str, str] = {}  # BRK id -> SPT that removed its text
+    for (start, end), sid in sorted(to_remove, key=lambda t: -t[0][0]):
+        s = spts[sid]
+        inside = [
+            g.gid for g in groups0
+            if s["src"][0] <= g.src_start and g.src_end <= s["src"][1] and not g.in_note
+        ]
+        for gid in inside:
+            superseded[gid] = sid
+        structure_log.append(
+            _spt_entry(s, "removed subsection", spt_effective[sid], "answer",
+                       before=src[start:end][:200], brackets_removed=inside)
+        )
+        src = src[:start] + src[end:]
+    for c in redline:
+        if c["id"] in superseded:
+            c["action"] += f" (then removed with {superseded[c['id']]})"
+    if revisions:
+        rtree = secfile.parse_source(rev, tolerant=True)
+        rspans = [
+            (el.src_start, el.src_end)
+            for el in rtree.root.iter("SPT")
+            if el.attrs.get(_SPT_MARK) in removed_ids
+            and not any(a.name == "DEL" for a in el.ancestors())
+        ]
+        rspans = [
+            sp for sp in rspans
+            if not any(o[0] < sp[0] and sp[1] <= o[1] for o in rspans if o != sp)
+        ]
+        for start, end in sorted(rspans, key=lambda sp: -sp[0]):
+            rev = rev[:start] + "<DEL>" + rev[start:end] + "</DEL>" + rev[end:]
+
+    kept_default = 0
+    for s in subsections:
+        sid, rec = s["id"], spt_effective.get(s["id"])
+        if sid in removed_ids or _removed_ancestor(spts, sid, removed_ids):
+            continue
+        if sid not in present:
+            if rec and rec["answer"] == "remove":
+                structure_log.append(
+                    _spt_entry(s, f"already removed with {_gone_reason(s)}", rec, "answer"))
+            elif rec:
+                structure_log.append(_spt_entry(
+                    s, f"keep had no effect: removed with {_gone_reason(s)}", rec, "answer"))
+            continue
+        if rec:
+            structure_log.append(_spt_entry(s, "kept", rec, "answer"))
+        else:
+            structure_log.append(_spt_entry(s, "kept by default", None, "default"))
+            kept_default += 1
+    redline.extend(structure_log)
+
+    # strip the tracking markers; nothing below may see them
+    src = _SPT_MARK_RE.sub("", src)
+    rev = _SPT_MARK_RE.sub("", rev)
+    for c in redline:
+        for k in ("before", "after"):
+            if isinstance(c.get(k), str):
+                c[k] = _SPT_MARK_RE.sub("", c[k])
+    if _SPT_MARK in src or _SPT_MARK in rev:
+        raise GenerateError("internal error: subsection marker left in output")
+
     # --- rescan the OUTPUT: the unresolved report is defined by what
     # actually remains bracketed, so choices that carried nested brackets
     # (e.g. picking a paragraph that itself contains [copper][aluminum])
@@ -619,10 +774,15 @@ def generate(
         "answers_fingerprint": fp_status,
         "answers_carried": len(bracket_answers),
         "answers_orphaned": len(orphans),
+        "subsections_answered": len(spt_answers),
         "decisions_total": len(groups),
-        "resolved": len([r for r in redline if r["kind"] != "tailoring"]),
+        "resolved": len(
+            [r for r in redline if r["kind"] not in ("tailoring", "subsection")]
+        ),
         "unresolved": len(unresolved),
         "tailoring_blocks_removed": removed_tai,
+        "subsections_removed": len(removed_ids),
+        "subsections_kept_default": kept_default,
         "units_removed": removed_units,
         "bracket_chars_remaining": src.count("[") + src.count("]"),
         "source_defects": len(master_sec.defects),
@@ -665,9 +825,11 @@ def generate(
     brk = [
         c
         for c in redline
-        if c["kind"] not in ("tailoring", "units") and PLURAL_KEY not in c["action"]
+        if c["kind"] not in ("tailoring", "units", "subsection")
+        and PLURAL_KEY not in c["action"]
     ]
     tai = [c for c in redline if c["kind"] == "tailoring"]
+    spt_c = [c for c in redline if c["kind"] == "subsection"]
     if plural:
         verb = "kept (plural)" if plural[0]["answer"] == "keep" else "made singular"
         md += [f"_{len(plural)} plural [s] markers {verb} — profile setting._", ""]
@@ -688,6 +850,30 @@ def generate(
         md += ["## Tailoring blocks removed", ""]
         for c in tai:
             md.append(f"- {c['answer']}: {_plain(c['before'], 120)}")
+        md.append("")
+    if spt_c:
+        md += ["## Subsections", ""]
+        for c in spt_c:
+            if c["action"] == "removed subsection":
+                md += [
+                    f"## {c['id']} — removed subsection {c['num']} {c['title']}",
+                    "",
+                    f"- **Was:** {_plain(c['before'], 200)}",
+                ]
+                if c.get("brackets_removed"):
+                    md.append(f"- Decisions removed with it: {', '.join(c['brackets_removed'])}")
+                if c.get("notes"):
+                    md.append(f"- Note: {c['notes']}")
+                md.append("")
+        others = [c for c in spt_c
+                  if c["action"] not in ("removed subsection", "kept by default")]
+        for c in others:
+            md.append(f"- {c['id']} {c['num']} {c['title']}: {c['action']}")
+        if summary["subsections_kept_default"]:
+            md.append(
+                f"- {summary['subsections_kept_default']} subsections kept by default (no answer)"
+            )
+        md.append("")
     out_sec.with_suffix(".redline.md").write_text("\n".join(md), encoding="utf-8")
     unresolved_md = [
         f"# Unresolved decisions — {out_sec.name}",

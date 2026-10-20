@@ -28,6 +28,7 @@ Answer cell semantics (case-insensitive keywords):
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
@@ -81,6 +82,13 @@ Profile sheet - project-wide settings:
   UNITS OF MEASURE (SI/IP): SI = keep metric values, IP = keep inch-pound
                       values. One answer resolves every <MET>/<ENG> pair
                       in the section.
+
+Subsections sheet - one row per subsection (article/paragraph):
+  remove deletes the whole subsection, its children and every decision
+  inside it; keep or blank keeps it (blank is logged as "kept by default").
+  Rows with "Governed by" are the same decision as that bracket row on the
+  Answers sheet: answering either one is enough; conflicting answers are
+  flagged for review and neither is applied.
 """
 
 
@@ -208,6 +216,30 @@ def write_workbook(manifest: dict, out_path: Path | str) -> None:
         action_dv.add(ps.cell(row=prow, column=4))
     ps.freeze_panes = "A2"
 
+    # --- Subsections sheet: keep/remove per <SPT>; blank = kept by default ---
+    ss = wb.create_sheet("Subsections")
+    ss.append(["ID", "Number", "Title", "Governed by", "Action", "Anchor"])
+    for col in range(1, 7):
+        c = ss.cell(row=1, column=col)
+        c.fill = _HEADER_FILL
+        c.font = _HEADER_FONT
+    for col, w in zip("ABCDEF", [10, 10, 60, 12, 12, 50]):
+        ss.column_dimensions[col].width = w
+    spt_dv = DataValidation(
+        type="list", formula1='"keep,remove"', allow_blank=True, showErrorMessage=False
+    )
+    ss.add_data_validation(spt_dv)
+    for i, s in enumerate(manifest.get("subsections", []), 2):
+        ss.append(
+            [s["id"], s["num"], "  " * (s["depth"] - 1) + s["title"],
+             s.get("governed_by") or "", "", s["anchor"]]
+        )
+        spt_dv.add(ss.cell(row=i, column=5))
+        ss.cell(row=i, column=6).font = _DUP_FONT
+        if s.get("governed_by"):
+            ss.cell(row=i, column=4).font = _DUP_FONT
+    ss.freeze_panes = "A2"
+
     # --- ReadMe sheet ---
     rs = wb.create_sheet("ReadMe")
     rs.column_dimensions["A"].width = 100
@@ -278,6 +310,10 @@ def read_answers_json(
                     rec["id"] = str(v["id"]).strip()
                 if isinstance(v.get("options"), list):
                     rec["options"] = [str(o) for o in v["options"]]
+                # subsection answers: outline number and title, for display
+                for k in ("num", "title"):
+                    if isinstance(v.get(k), str) and v[k].strip():
+                        rec[k] = v[k].strip()
             answers[key] = rec
     return profile, answers, fingerprint
 
@@ -290,10 +326,11 @@ def resolve_answer_keys(
     *,
     force_stale: bool = False,
     strict: bool = False,
+    subsections: list[dict] | None = None,
 ) -> tuple[dict[str, dict], list[dict], str]:
-    """Map an answers dict onto THIS master's BRK ids.
+    """Map an answers dict onto THIS master's BRK and SPT ids.
 
-    Returns (answers keyed by gid, orphans, fingerprint status).
+    Returns (answers keyed by gid, orphans/problems, fingerprint status).
       - ME@ manual edits pass through unchanged.
       - Anchor keys (contain "#") resolve to the group with that anchor. An
         anchor with no match is an orphan: reported in .unresolved.md with
@@ -301,16 +338,31 @@ def resolve_answer_keys(
       - BRK keys are positional. They load only when the file is unstamped
         (legacy behavior) or its fingerprint matches the current or legacy
         scan; otherwise GenerateError unless force_stale.
-      - strict: any orphan, or a stamped fingerprint matching neither scan,
-        raises.
+      - Subsection keys (#spt: anchors, matched against `subsections` from
+        the manifest) come back keyed SPT-NNNN with answer "keep" or
+        "remove"; any other value is a problem entry, never guessed. A
+        positional SPT-NNNN key is an error: no fingerprint covers
+        subsections. A subsection governed by a bracket (governed_by) is
+        the same decision: its answer becomes that bracket's answer
+        (remove -> delete), and a disagreeing bracket answer leaves the
+        bracket unanswered with a "conflict" note.
+      - strict: any orphan or problem, or a stamped fingerprint matching
+        neither scan, raises.
     """
     from .errors import GenerateError
     from .scan import legacy_scan_fingerprint, scan_fingerprint
 
+    positional_spt = [k for k in answers if re.match(r"SPT-\d+$", k.strip())]
+    if positional_spt:
+        raise GenerateError(
+            f"subsection answers must be keyed by anchor, not by position: "
+            f"{positional_spt[:5]}"
+        )
     expected = scan_fingerprint(groups)
     legacy = legacy_scan_fingerprint(groups)
     fp_ok = fingerprint in (expected, legacy)
     by_anchor = {a: gid for gid, a in anchors.items()}
+    by_spt_anchor = {s["anchor"]: s for s in subsections or []}
     brk_keys = [k for k in answers if not k.startswith("ME@") and "#" not in k]
 
     stale_msg = (
@@ -325,11 +377,50 @@ def resolve_answer_keys(
             raise GenerateError(stale_msg)
 
     out: dict[str, dict] = {}
+    spt_out: dict[str, dict] = {}
     source_key: dict[str, str] = {}
     orphans: list[dict] = []
+
+    def _label(rec: dict) -> list[str]:
+        label = " ".join(p for p in (rec.get("num"), rec.get("title")) if p)
+        return [label] if label else []
+
     for key, rec in answers.items():
         if key.startswith("ME@"):
             out[key] = rec
+            continue
+        if "#spt:" in key:
+            s = by_spt_anchor.get(key)
+            if s is None:
+                orphans.append(
+                    {
+                        "id": key,
+                        "kind": "orphan",
+                        "options": _label(rec),
+                        "answer": rec.get("answer", ""),
+                        "note": f"master changed: decision not found "
+                                f"(was {rec.get('id') or '?'}); answer was "
+                                f"{rec.get('answer', '')!r}",
+                    }
+                )
+                continue
+            sid = s["id"]
+            if sid in source_key:
+                raise GenerateError(f"two answers for {sid}: {source_key[sid]}, {key}")
+            source_key[sid] = key
+            value = str(rec.get("answer", "")).strip().lower()
+            if value not in ("keep", "remove"):
+                orphans.append(
+                    {
+                        "id": sid,
+                        "kind": "subsection",
+                        "options": [f"{s['num']} {s['title']}"],
+                        "note": f"subsection answer must be keep or remove "
+                                f"(got {rec.get('answer', '')!r}); not applied",
+                    }
+                )
+                continue
+            spt_out[sid] = {**rec, "answer": value}
             continue
         if "#" in key:
             gid = by_anchor.get(key)
@@ -355,10 +446,33 @@ def resolve_answer_keys(
         source_key[gid] = key
         out[gid] = rec
 
+    # Governed subsections (plan D1): "[<SPT>...</SPT>]" is ONE decision. The
+    # subsection answer becomes the bracket answer; a disagreeing bracket
+    # answer leaves the bracket unanswered (never guessed) with a note.
+    spts = {s["id"]: s for s in subsections or []}
+    for sid, rec in spt_out.items():
+        brk = spts[sid].get("governed_by")
+        if not brk:
+            out[sid] = rec
+            continue
+        wanted = "delete" if rec["answer"] == "remove" else "keep"
+        current = str(out.get(brk, {}).get("answer", "")).strip()
+        if not current:
+            out[brk] = {"answer": wanted, "notes": rec.get("notes", ""), "via": sid}
+        elif current.lower() != wanted:
+            out[brk] = {
+                **out[brk],
+                "answer": "",
+                "conflict": f"conflicting answers: {sid} "
+                            f"({spts[sid]['num']} {spts[sid]['title']}) says "
+                            f"{rec['answer']}, {brk} says {current!r}; neither "
+                            f"applied",
+            }
+
     if strict and orphans:
         raise GenerateError(
-            f"{len(orphans)} answer(s) did not resolve to a decision in this "
-            f"master (master changed): {[o['id'] for o in orphans][:5]}"
+            f"{len(orphans)} answer(s) not applied (master changed, or an "
+            f"invalid value): {[o['id'] for o in orphans][:5]}"
         )
 
     if not brk_keys and len(source_key) + len(orphans) > 0:
@@ -425,4 +539,18 @@ def read_workbook(
             action = "" if len(row) <= act_i or row[act_i] is None else str(row[act_i]).strip().lower()
             if action in ("keep", "remove", "si", "ip"):
                 profile[str(row[key_i]).strip()] = action
+    if "Subsections" in wb.sheetnames:  # absent in workbooks made before step 3
+        ss = wb["Subsections"]
+        shead = {str(c.value).strip().lower(): i for i, c in enumerate(ss[1]) if c.value}
+        sid_i, act_i, anc_i = shead["id"], shead["action"], shead.get("anchor")
+        for row in ss.iter_rows(min_row=2, values_only=True):
+            if not row or not row[sid_i] or len(row) <= act_i or row[act_i] is None:
+                continue
+            action = str(row[act_i]).strip()
+            if not action:
+                continue
+            # any value is passed on; resolve_answer_keys rejects anything
+            # but keep/remove into the unresolved report
+            key = str(row[anc_i]).strip() if anc_i is not None and row[anc_i] else str(row[sid_i]).strip()
+            answers[key] = {"answer": action, "notes": ""}
     return profile, answers, fingerprint
