@@ -50,6 +50,46 @@ function removedRoots(subs, removed) {
 function insideAny(a, b, spans) {
   return spans.some(([s, e]) => s <= a && b <= e);
 }
+// Removal cleanup preview: the same rules as specgen.cleanup.plan_cleanup,
+// in text positions. C = {items, heads, refs, orgs} from the manifest;
+// removed = [[start, end, label], ...] for removed subsections. Returns the
+// spans generate will drop (struck, each with `why` = the label of the
+// subsection that held its uses) and the bracket decisions holding an
+// orphaned item (blocked: never removed, the engineer decides; plan D1).
+function cleanupPreview(C, removed) {
+  const struck = [], blocked = {};
+  if (!removed.length) return { struck, blocked };
+  const inR = (a, b) => insideAny(a, b, removed);
+  const why = e => {
+    const [a, b] = e.use_chars[0];
+    const hit = removed.find(([s, x]) => s <= a && b <= x);
+    return hit ? hit[2] : "";
+  };
+  const orphan = e => !inR(e.chars[0], e.chars[1]) && e.use_chars.length > 0 &&
+    e.use_chars.every(([a, b]) => inR(a, b));
+  const goneItems = new Set();
+  for (const e of C.items || [])
+    if (orphan(e)) {
+      if (e.in_bracket) blocked[e.in_bracket] = e.name;
+      else { struck.push({ kind: "submittal-item", id: e.id, chars: e.chars, why: why(e) }); goneItems.add(e.id); }
+    }
+  for (const h of C.heads || [])
+    if (h.items.length && h.items.every(i => goneItems.has(i))) {
+      const first = (C.items || []).find(e => e.id === h.items[0]);
+      struck.push({ kind: "sd-heading", id: h.name, chars: h.chars, why: first ? why(first) : "" });
+    }
+  const goneRefs = new Map();
+  for (const r of C.refs || [])
+    if (orphan(r) && !r.in_bracket) goneRefs.set(r.rid, r);
+  for (const o of C.orgs || [])
+    if (!inR(o.chars[0], o.chars[1]) && o.rids.length && o.rids.every(x => goneRefs.has(x))) {
+      struck.push({ kind: "reference-org", id: o.org, chars: o.chars, why: why(goneRefs.get(o.rids[0])) });
+      o.rids.forEach(x => goneRefs.delete(x));
+    }
+  for (const r of goneRefs.values())
+    struck.push({ kind: "reference", id: r.rid, chars: r.chars, why: why(r) });
+  return { struck, blocked };
+}
 """
 
 # Pure edit-core: the run model behind inline editing. DOM-free by design so
@@ -485,6 +525,8 @@ button.primary { background: var(--accent); color: var(--accent-ink); border-col
 #doc s.unitcut { color: var(--del-ink); background: var(--del); text-decoration: line-through; }
 #doc mark.taicut { cursor: pointer; }
 #doc mark.sptcut { cursor: pointer; }
+#doc s.clncut { color: var(--del-ink); background: var(--del); text-decoration: line-through; }
+#doc mark.clnhint { outline: 2px dashed #c98a00; outline-offset: 1px; }
 #doc s.sptcut.open { color: var(--del-ink); background: var(--del); cursor: pointer; }
 .navact { margin-left: auto; flex: none; display: none; gap: 2px; }
 .navrow2:hover .navact, .navrow2.sptrm .navact, .navact:has(button.on) { display: inline-flex; }
@@ -504,7 +546,7 @@ button.primary { background: var(--accent); color: var(--accent-ink); border-col
 #doc .lockedtxt { border-radius: 3px; }
 #doc.editing .gap { cursor: text; }
 #doc.editing .gap:focus { outline: none; }
-#doc.editing mark, #doc.editing .lockedtxt, #doc.editing s.unitcut {
+#doc.editing mark, #doc.editing .lockedtxt, #doc.editing s.unitcut, #doc.editing s.clncut {
   box-shadow: 0 0 0 1px var(--line) inset; background-clip: padding-box; }
 
 #side { position: sticky; top: 74px; align-self: start;
@@ -735,6 +777,15 @@ const subByAnchor = Object.fromEntries(SUBS.map(s => [s.anchor, s]));
 const brkAnswerOf = id => ((state.answers[id] || {}).answer || "");
 const removedSet = () => removedSubsections(SUBS, state.spt, brkAnswerOf);
 const removedSpans = () => { const rm = removedSet(); return SUBS.filter(s => rm.has(s.id)).map(s => s.span); };
+// what generate's removal cleanup will drop for the current removals
+const CLEANUP_DATA = { items: DATA.submittal_entries || [], heads: DATA.submittal_groups || [],
+  refs: (DATA.references || []).filter(r => r.chars), orgs: DATA.reference_orgs || [] };
+function cleanupNow() {
+  const rm = removedSet();
+  return cleanupPreview(CLEANUP_DATA,
+    SUBS.filter(s => rm.has(s.id)).map(s => [s.span[0], s.span[1], s.num + " " + s.title]));
+}
+let lastRemovedKey = "";
 function sptValue(s) {
   if (!s.governed_by) return state.spt[s.id] || "";
   const a = brkAnswerOf(s.governed_by).trim().toLowerCase();
@@ -869,6 +920,9 @@ function activeSpans() {
   }
   for (const s of removedRoots(SUBS, removedSet()))
     spans.push({ s: s.span[0], e: s.span[1], pri: 2, spt: s });
+  for (const c of cleanupNow().struck)
+    spans.push({ s: c.chars[0], e: c.chars[1], pri: 1, cln: c });
+  lastRemovedKey = [...removedSet()].join(",");
   const u = state.profile[UNITS_KEY];
   if (u === "si" || u === "ip")
     for (const pr of DATA.unit_spans || []) {
@@ -899,7 +953,8 @@ function inRemovedTai(d) {
 // a decision inside removed tailoring or a removed subsection is not asked
 // for: it leaves the counter, the next-unanswered walk and the export gate
 function inRemoved(d) {
-  return inRemovedTai(d) || insideAny(d.char_start, d.char_end, removedSpans());
+  return inRemovedTai(d) || insideAny(d.char_start, d.char_end, removedSpans()) ||
+    insideAny(d.char_start, d.char_end, cleanupNow().struck.map(c => c.chars));
 }
 
 let docAnchors = [];
@@ -1076,6 +1131,10 @@ function buildDoc() {
       const lines = DATA.text.slice(sp.s, sp.e).split("\n").length;
       return `<mark class="deleted sptcut" data-spt="${s.id}" title="click to expand">▸ ${esc(s.num)} ${esc(s.title)}: removed (${lines} lines)</mark>`;
     }
+    if (sp.cln)
+      return state.view === "redline"
+        ? `<s class="clncut" title="removed with ${esc(sp.cln.why)}: its only uses were there">${inner}</s>`
+        : "";
     return state.view === "redline" ? `<s class="unitcut">${inner}</s>` : "";
   };
   const gap = (from, to) =>
@@ -1186,6 +1245,14 @@ function updateMark(d) {
     const mp = markParts(d.char_start, d.char_end);
     m.innerHTML = mp ? mp.coreHtml : noteBoldHtml(d.char_start, d.char_end);
     m.title = "click to answer";
+    const orphan = cleanupNow().blocked[d.id];
+    if (orphan) {
+      // a submittal item whose only references went with removed
+      // subsections: generate keeps it (never answers this bracket for
+      // you) and lists it for review
+      cls.push("clnhint");
+      m.title = `"${orphan}" is no longer referenced (its uses were in removed subsections): consider delete`;
+    }
   } else if (pendingFills(d)) {
     // option picked but nested blanks unfilled: render the picked text so
     // the engineer sees what they chose, but stay yellow until Apply
@@ -1865,8 +1932,12 @@ function refresh() {
   ds.forEach(updateMark);
   renderPanel();
   updateProgress();
-  // a governing bracket answered in the panel changes its outline row
-  if (SUBS.some(s => s.governed_by)) renderNav();
+  // a governing bracket answered in the panel changes its outline row, and
+  // can change what is removed (collapsed blocks, cleanup strikes)
+  if (SUBS.some(s => s.governed_by)) {
+    renderNav();
+    if ([...removedSet()].join(",") !== lastRemovedKey) buildDoc();
+  }
 }
 
 // ---- header / footer actions ----

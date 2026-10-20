@@ -22,7 +22,8 @@ tailoring option, submittal, and reference a section demands of a specifier.
   kept or removed, with the same guarantees as bracket decisions. Removing
   every 5th subsection in all 430 well-formed WBDG masters passes generate's
   verification. Maxwell 23 64 10 with the 7 rule-based removals goes from
-  102 to 65 unresolved decisions.
+  102 to 65 unresolved decisions, and cleanup drops the 2 submittal items
+  and 12 references that only those subsections used.
 - Additive bracket lists: choice groups that are select-any lists
   ("[ single pole][, double pole][, and four-way]") render as checkboxes;
   connector-only spans ("[ or ]") are joiners, never options; kept items
@@ -104,9 +105,21 @@ are written "everything present until removed". `.redline.json` logs it as
 deliberate keep. A subsection that is the whole content of an optional
 bracket (`[<SPT>...</SPT>]`) is the same decision as that bracket; answering
 either sets both, and disagreeing answers are reported and neither applied.
-Removed subsections appear as `<DEL>` blocks in `.revisions.sec`. Submittal
-items and references used only inside a removed subsection are not cleaned
-up yet (work order step 4).
+Removed subsections appear as `<DEL>` blocks in `.revisions.sec`.
+
+Cleanup after removal. When subsections are removed, `generate` also drops
+what SpecsIntact's submittal and reference verification would otherwise
+flag. That means submittal items (`<ITM>` in the SUBMITTALS article) and
+reference entries (`<RID>`/`<RTL>`) whose only body uses were inside the
+removed subsections, plus any SD heading or reference organization block
+that this empties. Each one is logged in `.redline.json` with the
+subsection that caused it (and the item's reviewer code, if it had one).
+It becomes a `<DEL>` block in `.revisions.sec`, and the page strikes it as
+a preview. Section cross-references that are no longer cited are listed in
+the summary. An orphaned item inside a bracket is never removed, because
+that would answer the bracket decision. It stays, and `.unresolved.md`
+suggests deleting it. Only subsection removals trigger cleanup; text
+removed by bracket answers or tailoring is handled as before.
 
 Shared-drive workflow: `build_project.py` sets up a per-project layout
 (`decisions/`, `answers/`, `generated/`, `index.html`) that organizes manifests,

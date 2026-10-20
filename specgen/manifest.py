@@ -162,6 +162,115 @@ def _subsections(sec: SecFile, locs: list[_LocSpan], groups, offs) -> list[dict]
     return out
 
 
+_REVIEWER_RE = re.compile(r"^[GS]\b")
+
+
+def _norm_key(t: str) -> str:
+    return _WS_RE.sub(" ", t).strip().lower()
+
+
+def _cleanup_data(root: Element, sub_article, groups, declared: list[dict], offs) -> dict:
+    """Where submittal items, references and section cross-references are
+    declared and used, in master source spans, so cleanup (work order step
+    4) can tell which ones lose every body use when subsections are removed.
+    Each span also comes as text-stream positions ("chars", "use_chars")
+    for the decision page's preview.
+
+    A submittal item is one <ITM> in the submittals article, matched to body
+    <SUB> uses by its first <SUB>'s normalized text; its reviewer code is a
+    later <SUB> starting G or S. A reference is matched by its <RID> text.
+    `declared` (the manifest's references list) gains uses/in_bracket in
+    place."""
+
+    def chars(span) -> list[int]:
+        return [bisect.bisect_left(offs, span[0]), bisect.bisect_left(offs, span[1])]
+
+    def innermost(a: int, b: int):
+        enc = [g for g in groups if not g.in_note and g.src_start < a and b <= g.src_end]
+        return min(enc, key=lambda g: g.src_end - g.src_start, default=None)
+    body_subs: dict[str, list[list[int]]] = {}
+    a0, a1 = (sub_article.src_start, sub_article.src_end) if sub_article is not None else (-1, -1)
+    for el in root.iter("SUB"):
+        if not a0 <= el.src_start < a1:
+            body_subs.setdefault(_norm_key(el.text()), []).append([el.src_start, el.src_end])
+
+    entries: list[dict] = []
+    sd_groups: list[dict] = []
+    if sub_article is not None:
+        heads = []
+        for lst in sub_article.iter("LST"):
+            # from the <LST> text: 26 32 15 writes some headings without <SUB>
+            name = _WS_RE.sub(" ", lst.text()).strip()
+            if _SD_GROUP_RE.match(name):
+                heads.append({"name": name, "src": [lst.src_start, lst.src_end], "items": []})
+        for itm in sub_article.iter("ITM"):
+            subs = [e for e in itm.iter("SUB")]
+            if not subs:
+                continue
+            name = _WS_RE.sub(" ", subs[0].text()).strip()
+            reviewer = next(
+                (_WS_RE.sub(" ", e.text()).strip() for e in subs[1:]
+                 if _REVIEWER_RE.match(_WS_RE.sub(" ", e.text()).strip())),
+                None,
+            )
+            inner = innermost(itm.src_start, itm.src_end)
+            head = next((h for h in reversed(heads) if h["src"][0] < itm.src_start), None)
+            eid = f"ITM-{len(entries) + 1:04d}"
+            if head is not None:
+                head["items"].append(eid)
+            entries.append(
+                {
+                    "id": eid,
+                    "name": name,
+                    "sd_group": head["name"] if head else None,
+                    "src": [itm.src_start, itm.src_end],
+                    "uses": body_subs.get(_norm_key(name), []),
+                    "reviewer": reviewer,
+                    "in_bracket": inner.gid if inner is not None else None,
+                }
+            )
+        sd_groups = heads
+    for e in entries:
+        e["chars"] = chars(e["src"])
+        e["use_chars"] = [chars(u) for u in e["uses"]]
+    for h in sd_groups:
+        h["chars"] = chars(h["src"])
+
+    body_rids: dict[str, list[list[int]]] = {}
+    for rid in root.iter("RID"):
+        if not any(a.name == "REF" for a in rid.ancestors()):
+            body_rids.setdefault(_norm_key(rid.text()), []).append([rid.src_start, rid.src_end])
+    for d in declared:
+        d["uses"] = body_rids.get(_norm_key(d["rid"]), [])
+        d["chars"] = chars(d["entry_src"])
+        d["use_chars"] = [chars(u) for u in d["uses"]]
+        inner = innermost(*d["entry_src"])
+        d["in_bracket"] = inner.gid if inner is not None else None
+    orgs = []
+    for ref in root.iter("REF"):
+        org_el = ref.first("ORG")
+        orgs.append(
+            {
+                "org": _WS_RE.sub(" ", org_el.text()).strip() if org_el is not None else "",
+                "src": [ref.src_start, ref.src_end],
+                "chars": chars([ref.src_start, ref.src_end]),
+                "rids": [d["rid"] for d in declared if ref.src_start <= d["src"][0] < ref.src_end],
+            }
+        )
+
+    section_refs: dict[str, list[list[int]]] = {}
+    for srf in root.iter("SRF"):
+        section_refs.setdefault(_WS_RE.sub(" ", srf.text()).strip(), []).append(
+            [srf.src_start, srf.src_end]
+        )
+    return {
+        "submittal_entries": entries,
+        "submittal_groups": sd_groups,
+        "reference_orgs": orgs,
+        "section_refs": section_refs,
+    }
+
+
 def section_subsections(sec: SecFile) -> list[dict]:
     """The manifest's subsections list without building the whole manifest."""
     groups, _text, offs = scan_groups(sec.source)
@@ -302,11 +411,13 @@ def build_manifest(sec: SecFile) -> dict:
 
     # Submittals: grouped walk inside the SUBMITTALS subpart, usage elsewhere
     submittal_items: list[dict] = []
-    sub_article: Element | None = None
-    for spt in root.iter("SPT"):
-        if _title_of(spt).upper().startswith("SUBMITTAL"):
-            sub_article = spt
-            break
+    # the article titled exactly SUBMITTALS; else the first SUBMITTAL* one
+    # (01 33 00 has "Submittal Information" at 1.1.1 before its 1.3 SUBMITTALS)
+    sub_titled = [s for s in root.iter("SPT") if _title_of(s).upper().startswith("SUBMITTAL")]
+    sub_article: Element | None = next(
+        (s for s in sub_titled if _title_of(s).upper() == "SUBMITTALS"),
+        sub_titled[0] if sub_titled else None,
+    )
     seen = set()
     if sub_article is not None:
         group = None
@@ -344,6 +455,9 @@ def build_manifest(sec: SecFile) -> dict:
                             "rid": rid,
                             "title": _WS_RE.sub(" ", child.text()).strip(),
                             "org": org,
+                            "src": [rid_el.src_start, rid_el.src_end],
+                            # the whole entry: <RID> through its <RTL>
+                            "entry_src": [rid_el.src_start, child.src_end],
                         }
                     )
                     rid_el = None
@@ -351,6 +465,8 @@ def build_manifest(sec: SecFile) -> dict:
     for rid in root.iter("RID"):
         if not any(a.name == "REF" for a in rid.ancestors()):
             used_ids.add(_WS_RE.sub(" ", rid.text()).strip())
+
+    cleanup = _cleanup_data(root, sub_article, groups, declared, _offs)
 
     # Legacy kinds are seeded so counts always carry kind_choice/kind_blank/
     # kind_optional (cli.cmd_report subscripts them); new kinds count in too.
@@ -445,6 +561,9 @@ def build_manifest(sec: SecFile) -> dict:
         # keep/remove structural decisions; separate from bracket decisions
         # so their ids, counts and the unanswered gate are unaffected
         "subsections": subsections,
+        # where submittal items, references and section cross-references are
+        # declared and used (master source spans), for removal cleanup
+        **cleanup,
         "submittals": submittal_items,
         "references": declared,
         "unit_spans": unit_spans,
