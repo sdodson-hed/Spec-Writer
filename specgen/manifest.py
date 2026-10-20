@@ -189,8 +189,8 @@ def _cleanup_data(root: Element, sub_article, groups, declared: list[dict]) -> d
     if sub_article is not None:
         heads = []
         for lst in sub_article.iter("LST"):
-            first = lst.first("SUB")
-            name = _WS_RE.sub(" ", first.text()).strip() if first is not None else ""
+            # from the <LST> text: 26 32 15 writes some headings without <SUB>
+            name = _WS_RE.sub(" ", lst.text()).strip()
             if _SD_GROUP_RE.match(name):
                 heads.append({"name": name, "src": [lst.src_start, lst.src_end], "items": []})
         for itm in sub_article.iter("ITM"):
@@ -395,11 +395,13 @@ def build_manifest(sec: SecFile) -> dict:
 
     # Submittals: grouped walk inside the SUBMITTALS subpart, usage elsewhere
     submittal_items: list[dict] = []
-    sub_article: Element | None = None
-    for spt in root.iter("SPT"):
-        if _title_of(spt).upper().startswith("SUBMITTAL"):
-            sub_article = spt
-            break
+    # the article titled exactly SUBMITTALS; else the first SUBMITTAL* one
+    # (01 33 00 has "Submittal Information" at 1.1.1 before its 1.3 SUBMITTALS)
+    sub_titled = [s for s in root.iter("SPT") if _title_of(s).upper().startswith("SUBMITTAL")]
+    sub_article: Element | None = next(
+        (s for s in sub_titled if _title_of(s).upper() == "SUBMITTALS"),
+        sub_titled[0] if sub_titled else None,
+    )
     seen = set()
     if sub_article is not None:
         group = None

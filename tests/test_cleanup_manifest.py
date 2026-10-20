@@ -97,6 +97,28 @@ def test_section_refs():
     assert SRC[a:b] == "<SRF>22 00 00</SRF>"
 
 
+def test_sd_heading_without_sub_tag_is_recognized():
+    # 26 32 15 (UMRL July 2026) writes "<LST>SD-11 Closeout Submittals</LST>"
+    # with no <SUB>; its items must not be filed under the previous heading
+    src = SRC.replace("<LST><SUB>SD-06 Test Reports</SUB></LST>",
+                      "<LST>SD-06 Test Reports</LST>")
+    groups = _m(src)["submittal_groups"]
+    assert [(g["name"], g["items"]) for g in groups] == [
+        ("SD-03 Product Data", ["ITM-0001", "ITM-0002", "ITM-0003"]),
+        ("SD-06 Test Reports", ["ITM-0004"]),
+    ]
+
+
+def test_article_titled_submittals_wins_over_earlier_submittal_titles():
+    # 01 33 00 has "Submittal Information" (1.1.1) before "SUBMITTALS" (1.3)
+    src = SRC.replace(
+        "<SPT><TTL>REFERENCES</TTL>",
+        "<SPT><TTL>Submittal Information</TTL><ITM><SUB>Decoy</SUB></ITM></SPT>"
+        "<SPT><TTL>REFERENCES</TTL>")
+    names = [e["name"] for e in _m(src)["submittal_entries"]]
+    assert names == ["Scroll Chiller", "Gas Engine", "Field Test Plan", "Never Used"]
+
+
 def test_existing_submittals_list_unchanged():
     m = _m()
     # the deduped name list the report prints keeps its old shape
