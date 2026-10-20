@@ -110,6 +110,31 @@ def test_override_kept_when_prefill_goes_silent():
     assert a[K] == o
 
 
+# --- a duplicate's first instance (same_as) follows its decision ---------------
+
+F = "PART 1/SUBMITTALS#choice:abc"
+
+
+def mirror(answer, value, **extra):
+    return {**auto(answer, value), "id": "BRK-0002", "same_as": "BRK-0023",
+            "notes": "prefill (compressor-type): same decision as BRK-0023", **extra}
+
+
+def test_mirror_is_replaced_quietly_and_reports_one_conflict():
+    # the page copied the override onto the mirror; the data then changed
+    over = overridden("2", "1", "SCROLL")
+    existing = {K: over, F: {**mirror("2", "SCROLL"), "source": over["source"], "state": "overridden"}}
+    a, r = m(existing, {K: auto("3", "ROTARY SCREW"), F: mirror("3", "ROTARY SCREW")})
+    assert a[F] == mirror("3", "ROTARY SCREW")      # generate makes it follow K
+    assert list(r) == [K] and r[K]["outcome"] == "conflict"
+
+
+def test_mirror_taken_over_by_the_engineer_merges_as_theirs():
+    mine = {**overridden("2", "1", "SCROLL"), "id": "BRK-0002"}   # same_as dropped
+    a, r = m({F: mine}, {F: mirror("1", "SCROLL")})
+    assert a[F]["answer"] == "2" and "same_as" not in a[F] and r[F]["outcome"] == "kept override"
+
+
 # --- manual answers (D3) ---------------------------------------------------------
 
 def test_manual_answer_equal_to_new_value_is_kept():

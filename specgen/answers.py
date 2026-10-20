@@ -320,6 +320,8 @@ def read_answers_json(
                     rec["source"] = v["source"]
                 if v.get("state") in ("auto", "overridden", "conflict"):
                     rec["state"] = v["state"]
+                if isinstance(v.get("same_as"), str) and v["same_as"].strip():
+                    rec["same_as"] = v["same_as"].strip()
             answers[key] = rec
     return profile, answers, fingerprint
 
@@ -392,6 +394,7 @@ def resolve_answer_keys(
         label = " ".join(p for p in (rec.get("num"), rec.get("title")) if p)
         return [label] if label else []
 
+    answers = _follow_same_as(answers)
     for key, rec in answers.items():
         if key.startswith("ME@"):
             out[key] = rec
@@ -466,7 +469,7 @@ def resolve_answer_keys(
         if rec.get("state") == "conflict":
             # step 7 D2: leave the bracket unanswered with both values shown;
             # "conflict" also stops duplicate propagation from filling it
-            conflicts += 1
+            conflicts += 0 if rec.get("same_as") else 1  # one decision, one conflict
             out[gid] = {**rec, "answer": "", "conflict": _conflict_note(rec)}
             continue
         out[gid] = rec
@@ -520,6 +523,27 @@ def resolve_answer_keys(
     else:
         status = "MISMATCH (forced)"
     return out, orphans, status
+
+
+def _follow_same_as(answers: dict[str, dict]) -> dict[str, dict]:
+    """A record prefill wrote for a duplicate's first instance (same_as: the
+    BRK id of the instance a rule answered) takes that record's answer,
+    source and state, so an override or a conflict reaches every instance.
+    The target missing or unanswered leaves the first instance unanswered.
+    To answer the first instance on its own, drop its same_as."""
+    key_of = {r["id"]: k for k, r in answers.items()
+              if not k.startswith("ME@") and isinstance(r, dict) and r.get("id")}
+    out = {}
+    for key, rec in answers.items():
+        if key.startswith("ME@") or not rec.get("same_as"):
+            out[key] = rec
+            continue
+        t = answers.get(key_of.get(rec["same_as"])) or {}
+        if not str(t.get("answer", "")).strip():
+            continue  # the decision was cleared: so is its copy
+        out[key] = {**{k: v for k, v in t.items() if k not in ("id", "options", "notes")},
+                    **{k: rec[k] for k in ("id", "options", "notes", "same_as") if k in rec}}
+    return out
 
 
 def _conflict_note(rec: dict) -> str:

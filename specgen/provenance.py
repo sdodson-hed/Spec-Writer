@@ -112,6 +112,14 @@ def merge(existing: dict, fresh: dict) -> tuple[dict, list[dict]]:
         if key.startswith("ME@"):  # text edits are the engineer's
             answers[key] = copy.deepcopy(old.get(key, new.get(key)))
             continue
+        e, n = old.get(key), new.get(key)
+        if (e or n or {}).get("same_as") and (e is None or e.get("same_as")):
+            # a duplicate's first instance: generate and the page copy its
+            # decision's record onto it, so take prefill's and report the
+            # decision once (an engineer who dropped same_as owns it)
+            if n is not None:
+                answers[key] = copy.deepcopy(n)
+            continue
         res, outcome, detail = _merge_record(old.get(key), new.get(key))
         if res is not None:
             answers[key] = res

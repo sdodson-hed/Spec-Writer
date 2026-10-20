@@ -118,6 +118,24 @@ function stampEdits(prev, recs) {
   for (const [id, rec] of Object.entries(recs)) stampOne(prev[id], rec);
   return recs;
 }
+// A duplicate's first instance that prefill answered (same_as: the BRK id a
+// rule answered) copies that decision's record, as generate does. Editing
+// the first instance itself releases it (same_as dropped) before stamping.
+function releaseSameAs(prev, recs) {
+  for (const [id, rec] of Object.entries(recs))
+    if (rec.same_as && id in prev && (rec.answer || "") !== prev[id]) delete rec.same_as;
+  return recs;
+}
+function followSameAs(recs) {
+  for (const [id, rec] of Object.entries(recs)) {
+    if (!rec.same_as) continue;
+    const t = recs[rec.same_as];
+    if (!t || !t.answer) { delete recs[id]; continue; }
+    const { notes: _n, id: _i, ...copy } = t;
+    recs[id] = { ...copy, notes: rec.notes || "", same_as: rec.same_as };
+  }
+  return recs;
+}
 function snapshot(recs) {
   return Object.fromEntries(Object.entries(recs).map(([k, r]) => [k, (r && r.answer) || ""]));
 }
@@ -877,7 +895,9 @@ function stampMeta(values, metas, before) {
 }
 function stampAll() {
   if (!provSnap) return;
+  releaseSameAs(provSnap.a, state.answers);
   stampEdits(provSnap.a, state.answers);
+  followSameAs(state.answers);
   stampMeta(state.spt, state.sptMeta, provSnap.s);
   stampMeta(state.profile, state.profileMeta, provSnap.p);
   takeSnap();

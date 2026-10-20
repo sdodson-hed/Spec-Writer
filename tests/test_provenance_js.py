@@ -53,6 +53,23 @@ eq(keepMine(conf), {answer: "2", id: "BRK-1", source: {kind: "manual", was: NOW}
 const {answer: _a, ...nowSrc} = NOW;
 eq(takePrefill(conf), {answer: "3", id: "BRK-1", source: nowSrc, state: "auto"}, "take prefill");
 
+// a duplicate's first instance follows its decision, override and conflict too
+const MIR = {answer: "1", notes: "prefill (compressor-type): same decision as BRK-23",
+             source: {...SRC}, state: "auto", same_as: "BRK-23"};
+recs = {"BRK-23": {...over}, "BRK-2": {...MIR}};
+followSameAs(recs);
+eq(recs["BRK-2"], {answer: "2", source: over.source, state: "overridden",
+                   notes: MIR.notes, same_as: "BRK-23"}, "mirror follows override");
+recs = {"BRK-23": {...conf}, "BRK-2": {...MIR}};
+eq(followSameAs(recs)["BRK-2"].state, "conflict", "mirror follows conflict");
+recs = {"BRK-2": {...MIR}};
+eq(followSameAs(recs), {}, "decision cleared: mirror cleared");
+// editing the first instance itself releases it
+recs = {"BRK-23": {...over}, "BRK-2": {...MIR, answer: "3"}};
+releaseSameAs({"BRK-23": "2", "BRK-2": "1"}, recs);
+followSameAs(recs);
+eq([recs["BRK-2"].answer, "same_as" in recs["BRK-2"]], ["3", false], "released");
+
 // classes for coloring
 eq(provClass({answer: "1", source: SRC, state: "auto"}), "schedule", "auto schedule");
 eq(provClass({answer: "keep", source: {kind: "bod"}, state: "auto"}), "bod", "bod");
@@ -79,6 +96,8 @@ def test_page_wires_provenance(tmp_path):
     write_html(build_manifest(secfile.parse_source(MINI)), out)
     html = out.read_text(encoding="utf-8")
     assert "function stampEdits(" in html and "stampAll()" in html
+    assert "releaseSameAs(provSnap.a, state.answers);" in html
+    assert "followSameAs(state.answers);" in html
     for hook in ("prov-schedule", "prov-conflict", "prov-overridden", "provlegend",
                  "Revert to prefill", "Keep mine", "Take prefill",
                  "profile_meta: state.profileMeta", "state.sptMeta"):

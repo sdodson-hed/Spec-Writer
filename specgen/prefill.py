@@ -283,6 +283,9 @@ def prefill(manifest: dict, dd: DesignData, ann: Annotation) -> PrefillResult:
         answers[first["anchor"]] = {
             **rec, "id": first_id, "options": first["options"],
             "notes": f"prefill ({rule_id}): same decision as {rec['id']}",
+            # the link generate and the page follow: this record mirrors
+            # rec's, including the engineer's override or a conflict
+            "same_as": rec["id"],
         }
         report.append({"kind": "duplicate", "rule": f"{rule_id} (first instance)", "target": first_id,
                        "label": " | ".join(first["options"]), "outcome": "answered",
