@@ -42,7 +42,7 @@ derive:
   condenser:
     from: type
     map: {"AIR-COOLED SCROLL": air-cooled, "WATER-COOLED CENTRIFUGAL": water-cooled}
-  driver: {value: electric}
+  driver: {value: electric motor}
 rules:
   - id: compressor-type
     target: {path: "PART 2/WATER CHILLERS/*TYPE CHILLER", kind: choice,
@@ -69,8 +69,11 @@ rules:
     target: {path: "PART 2/COMPONENTS", kind: optional}
     remove_unless: {bod: {sound_test: true}}
   - id: capacity
-    target: {path: "PART 2/COMPONENTS", kind: blank, nth: 2}
+    target: {path: "PART 2/COMPONENTS", kind: blank, nth: 1}
     fill: "{capacity_mbh}"
+  - id: engine-hp
+    target: {path: "PART 2/COMPONENTS/COMPRESSOR DRIVER, GAS-ENGINE", kind: blank}
+    fill: "{engine_hp}"
 """
 
 
@@ -105,10 +108,10 @@ def test_ambiguous_target_without_options_or_nth():
 
 def test_nth_picks_in_document_order():
     m = _m()
-    first = resolve_targets(_ann(ANNOTATION.replace("nth: 2", "nth: 1")), m)["capacity"]
-    second = resolve_targets(_ann(), m)["capacity"]
+    first = resolve_targets(_ann(), m)["capacity"]
+    second = resolve_targets(_ann(ANNOTATION.replace("nth: 1", "nth: 2")), m)["capacity"]
     assert first[0]["offset"] < second[0]["offset"]
-    assert check_targets(_ann(ANNOTATION.replace("nth: 2", "nth: 3")), m) == [
+    assert check_targets(_ann(ANNOTATION.replace("nth: 1", "nth: 3")), m) == [
         "capacity: nth 3 but only 2 matches"]
 
 
@@ -153,7 +156,7 @@ def test_annotate_check_cli(tmp_path, capsys):
     good.write_text(ANNOTATION, encoding="utf-8")
     assert main(["annotate-check", str(master), "--annotation", str(good)]) == 0
     out = capsys.readouterr().out
-    assert "OK   compressor-type -> BRK-" in out and "8 rules, 0 problems" in out
+    assert "OK   compressor-type -> BRK-" in out and "9 rules, 0 problems" in out
     bad = tmp_path / "bad.yaml"
     bad.write_text(ANNOTATION.replace("HEAT RECOVERY CONDENSER COIL", "NOPE"), encoding="utf-8")
     assert main(["annotate-check", str(master), "--annotation", str(bad)]) == 1

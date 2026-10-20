@@ -256,6 +256,34 @@ def cmd_annotate_check(args) -> int:
     return 1 if problems else 0
 
 
+def cmd_prefill(args) -> int:
+    from .annotation import AnnotationError, load_annotation
+    from .designdata import DesignDataError, load_design_data
+    from .prefill import PrefillError, dumps, prefill, report_markdown
+
+    out = Path(args.out)
+    if out.exists() and not args.force:
+        print(f"Refusing to overwrite {out}: it may hold an engineer's edits "
+              "(rerun with --force to replace it)")
+        return 1
+    try:
+        dd = load_design_data(args.design_data)
+        ann = load_annotation(args.annotation)
+        res = prefill(build_manifest(secfile.parse(args.file, tolerant=True)), dd, ann)
+    except (DesignDataError, AnnotationError, PrefillError) as e:
+        print(f"ERROR: {e}")
+        return 1
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(dumps(res), encoding="utf-8")
+    md = out.with_suffix(".prefill.md")
+    md.write_text(report_markdown(res), encoding="utf-8")
+    rules = [r for r in res.report if r["kind"] == "rule"]
+    left = sum(r["outcome"] == "unresolved" for r in res.report)
+    print(f"Wrote {out} and {md.name}: {sum(r['outcome'] == 'answered' for r in rules)} of "
+          f"{len(rules)} rules answered, {left} item(s) left for the engineer")
+    return 0
+
+
 def cmd_html(args) -> int:
     from .audit import audit_file
     from .htmlpage import write_html
@@ -296,6 +324,7 @@ def main(argv=None) -> int:
         ("html", cmd_html),
         ("audit", cmd_audit),
         ("annotate-check", cmd_annotate_check),
+        ("prefill", cmd_prefill),
     ]:
         sp = sub.add_parser(name)
         sp.add_argument("file")
@@ -318,6 +347,11 @@ def main(argv=None) -> int:
             sp.add_argument("--json", action="store_true")
         if name == "annotate-check":
             sp.add_argument("--annotation", required=True)
+        if name == "prefill":
+            sp.add_argument("--design-data", required=True)
+            sp.add_argument("--annotation", required=True)
+            sp.add_argument("-o", "--out", required=True)
+            sp.add_argument("--force", action="store_true")
         sp.set_defaults(fn=fn)
     args = p.parse_args(argv)
     return args.fn(args)

@@ -409,6 +409,8 @@ def resolve_answer_keys(
                 raise GenerateError(f"two answers for {sid}: {source_key[sid]}, {key}")
             source_key[sid] = key
             value = str(rec.get("answer", "")).strip().lower()
+            if not value:
+                continue  # unanswered (e.g. prefill could not decide): kept by default
             if value not in ("keep", "remove"):
                 orphans.append(
                     {
