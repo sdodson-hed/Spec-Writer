@@ -409,6 +409,12 @@ def resolve_answer_keys(
                 raise GenerateError(f"two answers for {sid}: {source_key[sid]}, {key}")
             source_key[sid] = key
             value = str(rec.get("answer", "")).strip().lower()
+            if not value:
+                # unanswered (e.g. prefill could not decide): kept by default;
+                # a note (the reason) still travels to .unresolved.md
+                if str(rec.get("notes", "")).strip():
+                    spt_out[sid] = {**rec, "answer": ""}
+                continue
             if value not in ("keep", "remove"):
                 orphans.append(
                     {
@@ -454,6 +460,10 @@ def resolve_answer_keys(
         brk = spts[sid].get("governed_by")
         if not brk:
             out[sid] = rec
+            continue
+        if not rec["answer"]:  # unanswered with a note: the bracket carries it
+            if not str(out.get(brk, {}).get("answer", "")).strip():
+                out[brk] = {**out.get(brk, {}), "answer": "", "notes": rec.get("notes", "")}
             continue
         wanted = "delete" if rec["answer"] == "remove" else "keep"
         current = str(out.get(brk, {}).get("answer", "")).strip()

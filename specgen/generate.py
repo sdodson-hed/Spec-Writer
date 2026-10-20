@@ -494,6 +494,8 @@ def generate(
             u = {"id": g.gid, "kind": g.kind, "options": [o.text for o in g.options]}
             if entry.get("conflict"):
                 u["note"] = entry["conflict"]
+            elif not ans and entry.get("notes"):
+                u["note"] = entry["notes"]  # e.g. why prefill could not answer it
             unresolved.append(u)
             continue
 
@@ -842,23 +844,32 @@ def generate(
     }
 
     kept_default = 0
+    spt_unresolved: list[dict] = []
     for s in subsections:
         sid, rec = s["id"], spt_effective.get(s["id"])
+        answered = bool(rec and rec["answer"])
         if sid in removed_ids or _removed_ancestor(spts, sid, removed_ids):
             continue
         if sid not in present:
-            if rec and rec["answer"] == "remove":
+            if answered and rec["answer"] == "remove":
                 structure_log.append(
                     _spt_entry(s, f"already removed with {_gone_reason(s)}", rec, "answer"))
-            elif rec:
+            elif answered:
                 structure_log.append(_spt_entry(
                     s, f"keep had no effect: removed with {_gone_reason(s)}", rec, "answer"))
             continue
-        if rec:
+        if answered:
             structure_log.append(_spt_entry(s, "kept", rec, "answer"))
         else:
-            structure_log.append(_spt_entry(s, "kept by default", None, "default"))
+            # unanswered: kept by default; a note (e.g. prefill's reason) also
+            # puts it on the unresolved list for the engineer
+            structure_log.append(_spt_entry(s, "kept by default", rec, "default"))
             kept_default += 1
+            if rec and rec.get("notes"):
+                spt_unresolved.append({
+                    "id": sid, "kind": "subsection", "options": [f"{s['num']} {s['title']}"],
+                    "note": f"{rec['notes']}; kept by default until answered",
+                })
     redline.extend(structure_log)
 
     # strip the tracking markers; nothing below may see them
@@ -906,6 +917,7 @@ def generate(
         unresolved.append(entry)
     unresolved.extend(orphans)
     unresolved.extend(cleanup_unresolved)
+    unresolved.extend(spt_unresolved)
     unresolved.extend(unresolved_edits)
 
     # --- verify before writing ---
@@ -925,7 +937,7 @@ def generate(
         "answers_fingerprint": fp_status,
         "answers_carried": len(bracket_answers),
         "answers_orphaned": len(orphans),
-        "subsections_answered": len(spt_answers),
+        "subsections_answered": sum(1 for r in spt_answers.values() if r["answer"]),
         "decisions_total": len(groups),
         "resolved": len(
             [r for r in redline if r["kind"] not in _NOT_DECISIONS]

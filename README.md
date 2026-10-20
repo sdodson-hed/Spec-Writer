@@ -58,6 +58,10 @@ python -m specgen generate  ... --strict      # refuse if any answer no longer r
 python scripts/audit_corpus.py [corpus_dir]   # audit + round-trip every .SEC under a dir
                                               # (default $SPECGEN_CORPUS, else masters/Specifications)
 python scripts/build_project.py <dir> <masters...>   # per-project batch + index
+python -m specgen annotate-check "masters/23 64 10.SEC" --annotation "annotations/23 64 10.yaml"
+python -m specgen prefill "masters/23 64 10.SEC" \
+    --design-data projects/maxwell/design-data.json \
+    --annotation "annotations/23 64 10.yaml" -o out/maxwell/23_64_10.answers.json
 ```
 
 ## The answer-file workflow (no platform integration required)
@@ -130,6 +134,43 @@ decisions, so the engineer can verify completeness before generation. When
 written; the `.revisions.sec` file opens directly in SpecsIntact with native
 red/green tracked-change markup, bridging the workflow back to the existing QA
 tools.
+
+## Design data and prefill
+
+`prefill` answers a section from the project's design data, so the engineer
+reviews exceptions instead of entering every value.
+
+- **Design data** (`projects/<name>/design-data.json`, schema
+  `specgen.design-data/1`) holds project attributes (`agency`, `units`),
+  equipment schedule rows (fields named after the schedule columns, each row
+  citing its source document) and basis-of-design fields (`bod`).
+- **An annotation** (`annotations/<section>.yaml`) maps that data to one
+  section's decisions. Each rule targets a decision by anchor path, kind,
+  option text and `nth`. It then either chooses an option
+  (`choose: {match: "{compressor_type}"}`), fills a blank
+  (`fill: "{refrigerant}"`), or keeps or removes a subsection or optional text
+  (`remove_unless: <condition>`). Conditions are YAML mappings over
+  `any_equipment`, `all_equipment`, `bod` and `project`, combined with `all`,
+  `any` and `not`. There are no expression strings. `derive` adds named facts
+  per equipment row.
+- **`annotate-check`** fails unless every rule matches exactly one decision in
+  the current master. Run it after each UFGS release.
+- **`prefill`** writes the same answers JSON the page and `generate` read, plus
+  a `.prefill.md` report. Agency tailoring and units come from the project.
+  Plural markers come only from an equipment `quantity`. Every answer records
+  its `source` (`kind`, `ref`, `rule`, `data_source`, `value`) and
+  `state: auto`.
+
+Missing data is never defaulted. A missing field (a condition is
+three-valued: true, false or unknown), disagreeing equipment rows, or a value
+that matches no option leaves the decision unanswered. Its note, for example
+"prefill (heat-recovery): needs bod.heat_recovery", appears on the page and in
+`.unresolved.md`. `prefill` will not overwrite an existing answers file
+without `--force`.
+
+PyYAML reads the annotations (`requirements.txt`). On a Python with no
+prebuilt PyYAML wheel, install it with `PYYAML_FORCE_LIBYAML=0` set to get
+the pure-Python build.
 
 Demo: `python scripts/maxwell_demo.py` fills the 23 64 10 workbook with the
 Maxwell AFB values (air-cooled, electric drive, scroll, Air Force tailoring)
