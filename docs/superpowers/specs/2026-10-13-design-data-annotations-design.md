@@ -203,6 +203,13 @@ This is the acceptance target for the pilot. "Rule" rows are deterministic from 
 
 Report before and after counts of unresolved decisions in the PR. Today's baseline from the Maxwell demo: 102.
 
+**Note, 2026-10-20 (step 6).** Two rows above did not survive contact with the master:
+
+- **"Refrigerant, capacity, EER, OAT, electrical blanks: Filled"** cannot happen. 23 64 10 has no such blanks. Its Part 1 note puts chiller performance data on the drawing equipment schedule, and its only Part 2 blanks sit in 2.5 and 2.6.7, which are removed for Maxwell. In this section the schedule drives three choices instead: compressor type, compressor driver and condenser.
+- **The "Confirm" rows** (2.4.3 to 2.4.7, 2.6.14, 2.7.4) are not in `annotations/23 64 10.yaml` until an engineer signs off on their rules. Until then they are kept by default and stay open.
+
+Result with `annotations/23 64 10.yaml` and no hand answers: 80 unresolved decisions (`tests/test_maxwell.py`). The spec's own example YAML above is illustrative. Its `refrigerant` target matches nothing in the master, which `annotate-check` reports.
+
 ## Testing
 
 - Unit tests for anchors: identical across CRLF and LF copies; stable when an unrelated group is inserted earlier in the section; `~n` numbering for repeats.

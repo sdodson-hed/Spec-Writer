@@ -275,7 +275,7 @@ def prefill(manifest: dict, dd: DesignData, ann: Annotation) -> PrefillResult:
             **rec, "id": first_id, "options": first["options"],
             "notes": f"prefill ({rule_id}): same decision as {rec['id']}",
         }
-        report.append({"kind": "rule", "rule": f"{rule_id} (first instance)", "target": first_id,
+        report.append({"kind": "duplicate", "rule": f"{rule_id} (first instance)", "target": first_id,
                        "label": " | ".join(first["options"]), "outcome": "answered",
                        "answer": rec["answer"], "reason": f"same decision as {rec['id']}"})
 
@@ -323,7 +323,7 @@ def report_markdown(res: PrefillResult) -> str:
     ]
     md += [f"- {r['setting']}: {r['answer'] or 'unresolved'} ({r['reason']})" for r in proj]
     md += ["", "## Rules", ""]
-    for r in rules:
+    for r in rules + [r for r in res.report if r["kind"] == "duplicate"]:
         line = f"- **{r['rule']}** -> {r['target']} ({r['label'][:60]}): "
         if r["outcome"] == "answered":
             line += f"`{r['answer']}` from {r['reason']}"
