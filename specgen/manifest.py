@@ -162,6 +162,99 @@ def _subsections(sec: SecFile, locs: list[_LocSpan], groups, offs) -> list[dict]
     return out
 
 
+_REVIEWER_RE = re.compile(r"^[GS]\b")
+
+
+def _norm_key(t: str) -> str:
+    return _WS_RE.sub(" ", t).strip().lower()
+
+
+def _cleanup_data(root: Element, sub_article, groups, declared: list[dict]) -> dict:
+    """Where submittal items, references and section cross-references are
+    declared and used, in master source spans, so cleanup (work order step
+    4) can tell which ones lose every body use when subsections are removed.
+
+    A submittal item is one <ITM> in the submittals article, matched to body
+    <SUB> uses by its first <SUB>'s normalized text; its reviewer code is a
+    later <SUB> starting G or S. A reference is matched by its <RID> text.
+    `declared` (the manifest's references list) gains src/uses in place."""
+    body_subs: dict[str, list[list[int]]] = {}
+    a0, a1 = (sub_article.src_start, sub_article.src_end) if sub_article is not None else (-1, -1)
+    for el in root.iter("SUB"):
+        if not a0 <= el.src_start < a1:
+            body_subs.setdefault(_norm_key(el.text()), []).append([el.src_start, el.src_end])
+
+    entries: list[dict] = []
+    sd_groups: list[dict] = []
+    if sub_article is not None:
+        heads = []
+        for lst in sub_article.iter("LST"):
+            first = lst.first("SUB")
+            name = _WS_RE.sub(" ", first.text()).strip() if first is not None else ""
+            if _SD_GROUP_RE.match(name):
+                heads.append({"name": name, "src": [lst.src_start, lst.src_end], "items": []})
+        for itm in sub_article.iter("ITM"):
+            subs = [e for e in itm.iter("SUB")]
+            if not subs:
+                continue
+            name = _WS_RE.sub(" ", subs[0].text()).strip()
+            reviewer = next(
+                (_WS_RE.sub(" ", e.text()).strip() for e in subs[1:]
+                 if _REVIEWER_RE.match(_WS_RE.sub(" ", e.text()).strip())),
+                None,
+            )
+            enclosing = [
+                g for g in groups
+                if not g.in_note and g.src_start < itm.src_start and itm.src_end <= g.src_end
+            ]
+            inner = min(enclosing, key=lambda g: g.src_end - g.src_start, default=None)
+            head = next((h for h in reversed(heads) if h["src"][0] < itm.src_start), None)
+            eid = f"ITM-{len(entries) + 1:04d}"
+            if head is not None:
+                head["items"].append(eid)
+            entries.append(
+                {
+                    "id": eid,
+                    "name": name,
+                    "sd_group": head["name"] if head else None,
+                    "src": [itm.src_start, itm.src_end],
+                    "uses": body_subs.get(_norm_key(name), []),
+                    "reviewer": reviewer,
+                    "in_bracket": inner.gid if inner is not None else None,
+                }
+            )
+        sd_groups = heads
+
+    body_rids: dict[str, list[list[int]]] = {}
+    for rid in root.iter("RID"):
+        if not any(a.name == "REF" for a in rid.ancestors()):
+            body_rids.setdefault(_norm_key(rid.text()), []).append([rid.src_start, rid.src_end])
+    for d in declared:
+        d["uses"] = body_rids.get(_norm_key(d["rid"]), [])
+    orgs = []
+    for ref in root.iter("REF"):
+        org_el = ref.first("ORG")
+        orgs.append(
+            {
+                "org": _WS_RE.sub(" ", org_el.text()).strip() if org_el is not None else "",
+                "src": [ref.src_start, ref.src_end],
+                "rids": [d["rid"] for d in declared if ref.src_start <= d["src"][0] < ref.src_end],
+            }
+        )
+
+    section_refs: dict[str, list[list[int]]] = {}
+    for srf in root.iter("SRF"):
+        section_refs.setdefault(_WS_RE.sub(" ", srf.text()).strip(), []).append(
+            [srf.src_start, srf.src_end]
+        )
+    return {
+        "submittal_entries": entries,
+        "submittal_groups": sd_groups,
+        "reference_orgs": orgs,
+        "section_refs": section_refs,
+    }
+
+
 def section_subsections(sec: SecFile) -> list[dict]:
     """The manifest's subsections list without building the whole manifest."""
     groups, _text, offs = scan_groups(sec.source)
@@ -344,6 +437,7 @@ def build_manifest(sec: SecFile) -> dict:
                             "rid": rid,
                             "title": _WS_RE.sub(" ", child.text()).strip(),
                             "org": org,
+                            "src": [rid_el.src_start, rid_el.src_end],
                         }
                     )
                     rid_el = None
@@ -351,6 +445,8 @@ def build_manifest(sec: SecFile) -> dict:
     for rid in root.iter("RID"):
         if not any(a.name == "REF" for a in rid.ancestors()):
             used_ids.add(_WS_RE.sub(" ", rid.text()).strip())
+
+    cleanup = _cleanup_data(root, sub_article, groups, declared)
 
     # Legacy kinds are seeded so counts always carry kind_choice/kind_blank/
     # kind_optional (cli.cmd_report subscripts them); new kinds count in too.
@@ -445,6 +541,9 @@ def build_manifest(sec: SecFile) -> dict:
         # keep/remove structural decisions; separate from bracket decisions
         # so their ids, counts and the unanswered gate are unaffected
         "subsections": subsections,
+        # where submittal items, references and section cross-references are
+        # declared and used (master source spans), for removal cleanup
+        **cleanup,
         "submittals": submittal_items,
         "references": declared,
         "unit_spans": unit_spans,
