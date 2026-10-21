@@ -4,8 +4,9 @@ Usage: python scripts/audit_corpus.py [corpus_dir]
 
 The corpus is the argument, else $SPECGEN_CORPUS, else masters/Specifications.
 Searches recursively for .SEC/.sec (WBDG ships lowercase, one folder per
-division). Parses in tolerant mode: a master with a source defect (stray
-close tag) prints DEFECT and is counted separately, not as a clean pass.
+division). Parses in tolerant mode: a master with a source defect (a stray
+close tag, or a byte windows-1252 leaves undefined) prints DEFECT and is
+counted separately, not as a clean pass.
 Exits 1 on any round-trip failure, unattributed signal, parse error, or an
 empty corpus.
 """
@@ -18,7 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from specgen import secfile  # noqa: E402
-from specgen.audit import audit_source  # noqa: E402
+from specgen.audit import audit_source, printable  # noqa: E402
 
 DEFAULT = ROOT / "masters" / "Specifications"
 
@@ -65,7 +66,8 @@ def main(argv: list[str]) -> int:
         elif report["defects"]:
             print(f"DEFECT {f.name}")
             for d in report["defects"]:
-                print(f"     {d['type']} {d['raw']} @ {d['offset']}: {d['context'][:100]}")
+                raw = d["raw"] if d["raw"].isprintable() else repr(d["raw"])
+                print(f"     {d['type']} {raw} @ {d['offset']}: {printable(d['context'][:100])}")
             n_defect += 1
         else:
             print(f"OK   {f.name}")

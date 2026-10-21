@@ -9,11 +9,35 @@ structural queries (titles, tailoring extents, submittals, references).
 
 from __future__ import annotations
 
+import codecs
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-ENCODING = "windows-1252"
+# windows-1252 as Windows itself reads it: the five bytes the standard leaves
+# undefined (0x81 0x8D 0x8F 0x90 0x9D) map to the C1 control characters of
+# the same number instead of raising, so every byte round-trips. Python's
+# "windows-1252" codec refuses them; SpecsIntact's own 02 83 00 has one.
+UNDEFINED_BYTES = (0x81, 0x8D, 0x8F, 0x90, 0x9D)
+ENCODING = "specgen-windows-1252"
+
+
+def _codec():
+    import encodings.cp1252 as base
+
+    table = "".join(chr(i) if i in UNDEFINED_BYTES else c for i, c in enumerate(base.decoding_table))
+    enc = codecs.charmap_build(table)
+
+    def encode(s, errors="strict"):
+        return codecs.charmap_encode(s, errors, enc)
+
+    def decode(b, errors="strict"):
+        return codecs.charmap_decode(b, errors, table)
+
+    return codecs.CodecInfo(encode, decode, name=ENCODING)
+
+
+codecs.register(lambda name: _codec() if name.replace("_", "-") == ENCODING else None)
 
 # Tags that render as a line break when flattening to plain text.
 _LINEBREAK_TAGS = {"BRK", "BRL"}
@@ -277,7 +301,15 @@ def parse_source(
     # The root was appended into prolog by emit() when its open tag was seen
     # (stack was empty and root was None) — pull it out.
     prolog = [node for node in prolog if node is not root]
+    # a byte windows-1252 leaves undefined is kept as-is and reported (it is
+    # a corrupt character, e.g. "off\x81-site" in 02 83 00)
+    for m in _UNDEFINED_RE.finditer(source):
+        defects.append({"type": "undefined-byte", "raw": m.group(), "offset": m.start()})
+    defects.sort(key=lambda d: d["offset"])
     return SecFile(
         path=path, source=source, prolog=prolog, root=root, epilog=epilog,
         defects=defects,
     )
+
+
+_UNDEFINED_RE = re.compile("[" + "".join(chr(b) for b in UNDEFINED_BYTES) + "]")
