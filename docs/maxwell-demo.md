@@ -56,7 +56,22 @@ The pages save your clicks in the browser. Clear all resets a page to the answer
 
 ## 3. SpecsIntact acceptance (step 8, manual)
 
-Our checks prove each output parses, round-trips byte for byte and is well formed. They do not prove that SpecsIntact accepts it. SpecsIntact is not installed on the build machine, so this step is manual. Use the files in `1-prefill/`:
+Our checks prove each output parses, round-trips byte for byte and is well formed. They do not prove that SpecsIntact accepts it, so this step is manual.
+
+Test SpecsIntact against its own release. The copy of 23 64 10 in SpecsIntact's library (`Documents\SpecsIntactWD\Masters\UFGS`) is newer than `masters/`: it has the July 2026 reference update. All 14 annotation rules match it, and the demo's answers carry over to it with none lost. Build the demo from it, reading it only:
+
+```
+python scripts/maxwell_demo.py --master "%USERPROFILE%\Documents\SpecsIntactWD\Masters\UFGS\23 64 10.SEC" --out out/maxwell-demo-si
+```
+
+Then, in SpecsIntact:
+
+1. New Job (for example "Maxwell demo") from the UFGS master, and add section 23 64 10. If it offers tailoring, pick none, because the generated file is already tailored.
+2. Close the section if it is open. Keep a copy of the job's `23 64 10.SEC`, then replace it with `out/maxwell-demo-si/1-prefill/23_64_10.sec`, renamed to `23 64 10.SEC`.
+3. Open the section in SpecsIntact and go through the list below.
+4. Repeat step 2 with `23_64_10.revisions.sec` to check the tracked changes.
+
+The list:
 
 - [ ] `23_64_10.sec` opens in SpecsIntact without errors or repair prompts.
 - [ ] The tailored text reads correctly in 2.4.1 (Scroll), the compressor driver line (electric motor) and the condenser line (air-cooled condenser coil).

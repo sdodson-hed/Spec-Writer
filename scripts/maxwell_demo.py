@@ -47,15 +47,15 @@ CONDENSER_TEXT = "Air-cooled condenser coil with factory-applied coil coating"
 REVISED_TYPE = "WATER-COOLED SCROLL"
 
 
-def _prefill(design: Path, answers: Path) -> None:
-    if cli(["prefill", str(MASTER), "--design-data", str(design),
+def _prefill(master: Path, design: Path, answers: Path) -> None:
+    if cli(["prefill", str(master), "--design-data", str(design),
             "--annotation", str(ANNOTATION), "-o", str(answers)]) != 0:
         raise SystemExit("prefill failed")
 
 
-def _generate(answers: Path, out: Path, strict: bool) -> dict:
+def _generate(master: Path, answers: Path, out: Path, strict: bool) -> dict:
     profile, ans, fp = read_answers_json(answers)
-    return generate(MASTER, profile, ans, out, revisions=True, fingerprint=fp, strict=strict,
+    return generate(master, profile, ans, out, revisions=True, fingerprint=fp, strict=strict,
                     profile_conflicts=read_profile_conflicts(answers))
 
 
@@ -88,7 +88,9 @@ def _engineer_review(answers: Path) -> None:
     answers.write_text(json.dumps(p, indent=2), encoding="utf-8")
 
 
-def main(out: Path = OUT) -> int:
+def main(out: Path = OUT, master: Path = MASTER) -> int:
+    """master: another copy of 23 64 10, e.g. the one in SpecsIntact's own
+    Masters\\UFGS folder (read only), so SpecsIntact checks its own release."""
     # start clean: delete the files, keep the folders (Windows refuses to
     # remove a folder that Explorer, a terminal or a web server has open)
     out.mkdir(parents=True, exist_ok=True)
@@ -98,12 +100,12 @@ def main(out: Path = OUT) -> int:
     one, two = out / "1-prefill", out / "2-schedule-revision"
     one.mkdir(exist_ok=True)
     two.mkdir(exist_ok=True)
-    manifest = build_manifest(secfile.parse(MASTER, tolerant=True))
+    manifest = build_manifest(secfile.parse(master, tolerant=True))
 
     # 1. the schedule as issued
     a1 = one / f"{STEM}.answers.json"
-    _prefill(DESIGN, a1)
-    s1 = _generate(a1, one / f"{STEM}.sec", strict=True)
+    _prefill(master, DESIGN, a1)
+    s1 = _generate(master, a1, one / f"{STEM}.sec", strict=True)
     _page(manifest, a1, one / f"{STEM}.decisions.html")
     line1 = _say("1-prefill", s1)
 
@@ -116,8 +118,8 @@ def main(out: Path = OUT) -> int:
     dd["equipment"][0]["type"] = REVISED_TYPE
     dd["sources"]["acc-sched-35"]["title"] += f" (demo revision: ACC-1 {REVISED_TYPE})"
     (two / "design-data.json").write_text(json.dumps(dd, indent=2), encoding="utf-8")
-    _prefill(two / "design-data.json", a2)
-    s2 = _generate(a2, two / f"{STEM}.sec", strict=False)   # --strict would refuse: 1 conflict
+    _prefill(master, two / "design-data.json", a2)
+    s2 = _generate(master, a2, two / f"{STEM}.sec", strict=False)   # --strict would refuse: 1 conflict
     _page(manifest, a2, two / f"{STEM}.decisions.html")
     line2 = _say("2-schedule-revision", s2)
     p2 = json.loads(a2.read_text(encoding="utf-8"))
@@ -175,4 +177,10 @@ Then ACC-1 becomes {html.escape(REVISED_TYPE)} and prefill runs again.</p>
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    import argparse
+
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--master", type=Path, default=MASTER, help="23 64 10.SEC to build from (read only)")
+    ap.add_argument("--out", type=Path, default=OUT)
+    a = ap.parse_args()
+    sys.exit(main(a.out, a.master))
