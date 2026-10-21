@@ -786,9 +786,15 @@ footer.actions { position: fixed; bottom: 0; left: 0; right: 0; background: var(
 const DATA = __DATA__;
 const PLURAL_KEY = __PLURAL_KEY__;
 const UNITS_KEY = __UNITS_KEY__;
-const KEY = "specgen:" + DATA.section + ":" + (DATA.revision || "");
+const KEY = "specgen:" + DATA.section + ":" + (DATA.revision || "") +
+  (DATA.preload_id ? ":" + DATA.preload_id : "");
 let state = { profile: {}, answers: {}, edits: {}, view: "redline", navOpen: true };
-try { state = Object.assign(state, JSON.parse(localStorage.getItem(KEY) || "{}")); } catch (e) {}
+let hadSaved = false;
+try {
+  const saved = localStorage.getItem(KEY);
+  hadSaved = !!saved;
+  state = Object.assign(state, JSON.parse(saved || "{}"));
+} catch (e) {}
 state.view = state.view || "redline";
 state.navOpen = state.navOpen === undefined ? true : state.navOpen;
 state.edits = state.edits || {};
@@ -2235,8 +2241,9 @@ document.getElementById("btnImport").onclick = () =>
 document.getElementById("fileImport").onchange = ev => {
   const f = ev.target.files[0];
   if (!f) return;
-  f.text().then(t => {
-    const data = JSON.parse(t);
+  f.text().then(t => importPayload(JSON.parse(t)));
+};
+function importPayload(data) {
     state.profile = data.profile || {};
     state.profileMeta = data.profile_meta || {};
     state.sptMeta = {};
@@ -2290,16 +2297,17 @@ document.getElementById("fileImport").onchange = ev => {
     takeSnap();  // imported answers are not edits
     save(); buildDoc(); renderNav(); renderPanel(); updateProgress(); renderProfile();
     if (orphans) alert(`${orphans} answer(s) belong to decisions that are not in this master (the master changed). They were not applied.`);
-  });
-};
+}
 document.getElementById("btnClear").onclick = () => {
-  if (confirm("Clear every answer on this page?")) {
+  if (confirm(DATA.preload ? "Reset this page to the answers it was built with?"
+                           : "Clear every answer on this page?")) {
     state = { profile: {}, answers: {}, edits: {}, spt: {}, sptMeta: {}, sptNotes: {}, profileMeta: {},
       view: state.view || "redline", navOpen: state.navOpen };
     overrideIds.clear(); meCardId = null; sptOpen.clear();
     editUndo = []; editRedo = [];
     takeSnap();
     save(); buildDoc(); renderNav(); renderPanel(); updateProgress(); renderProfile();
+    if (DATA.preload) importPayload(DATA.preload);
   }
 };
 
@@ -2321,13 +2329,24 @@ document.getElementById("btnView").textContent =
   "Redline view: " + (state.view === "redline" ? "on" : "off");
 updateProgress();
 renderPanel();
+// built with answers (html --answers): load them on first open; after that
+// the browser's saved answers win, as for any page
+if (DATA.preload && !hadSaved) { importPayload(DATA.preload); dirty = false; }
 </script>
 </body>
 </html>
 """
 
 
-def write_html(manifest: dict, out_path: Path | str) -> None:
+def write_html(manifest: dict, out_path: Path | str, preload: dict | None = None) -> None:
+    """preload: an answers payload the page loads on first open (its own
+    browser storage key, so answers saved from an earlier build don't hide it)."""
+    if preload is not None:
+        import hashlib
+
+        blob = json.dumps(preload, sort_keys=True).encode("utf-8")
+        manifest = {**manifest, "preload": preload,
+                    "preload_id": hashlib.sha256(blob).hexdigest()[:8]}
     data = json.dumps(manifest, ensure_ascii=False).replace("</", "<\\/")
     html = (
         _TEMPLATE.replace("__TITLE__", f"{manifest['section']} — decisions")

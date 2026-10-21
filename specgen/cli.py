@@ -325,7 +325,19 @@ def cmd_html(args) -> int:
     sec = secfile.parse(args.file, tolerant=True)
     m = build_manifest(sec)
     out = args.out or (Path(args.file).stem + ".decisions.html")
-    write_html(m, out)
+    preload = None
+    if args.answers:
+        # the page opens with these answers loaded; they must be for this scan
+        try:
+            preload = json.loads(Path(args.answers).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            print(f"ERROR: cannot read {args.answers}: {e}")
+            return 1
+        if preload.get("fingerprint") != m["fingerprint"]:
+            print(f"ERROR: {args.answers} was made for a different scan of this section "
+                  f"(fingerprint {preload.get('fingerprint')}, master {m['fingerprint']})")
+            return 1
+    write_html(m, out, preload=preload)
     uniq = len(
         [d for d in m["decisions"]
          if not d["in_note"] and not d.get("plural") and not d.get("duplicate_of")]
@@ -366,6 +378,8 @@ def main(argv=None) -> int:
             )
         if name in ("html", "generate"):
             sp.add_argument("--force", action="store_true")
+        if name == "html":
+            sp.add_argument("--answers", help="answers JSON the page opens with")
         if name == "audit":
             sp.add_argument("--json", action="store_true")
         if name == "annotate-check":
