@@ -37,6 +37,27 @@ def test_bracket_note_shown(tmp_path):
     assert note in block
 
 
+def test_bracket_keeps_its_id_and_note_when_edits_reshape_it(tmp_path):
+    # Units removal edits text INSIDE an open optional bracket, so its option
+    # text no longer matches the original exactly (23 64 26: 2.11.3 Glycol
+    # Solution, 3.8 one-year inspection). It must still be reported as itself,
+    # with prefill's note, not as an anonymous OPEN@ group.
+    src = MINI.replace("[Provide a factory sound test.]",
+                       "[Provide a factory sound test at <MET>3 m</MET><ENG>10 feet</ENG>.]")
+    m = build_manifest(secfile.parse_source(src))
+    d = next(d for d in m["decisions"] if d["kind"] == "optional" and "sound test" in d["options"][0])
+    note = "prefill (sound-test): needs bod.sound_test"
+    p = tmp_path / "m.SEC"
+    p.write_bytes(src.encode(secfile.ENCODING))
+    s = generate(p, {"UNITS OF MEASURE (SI/IP)": "ip"},
+                 {d["anchor"]: {"answer": "", "notes": note, "id": d["id"]}}, tmp_path / "o.sec")
+    assert s["units_removed"] >= 1
+    md = (tmp_path / "o.unresolved.md").read_text(encoding="utf-8")
+    block = md.split(f"## {d['id']}", 1)[1].split("## ", 1)[0]
+    assert note in block and "10 feet" in block and "3 m" not in block
+    assert "OPEN@" not in md
+
+
 def test_subsection_note_kept_by_default_and_listed(tmp_path):
     s = SUBS["Heat Recovery Condenser Coil"]
     note = "prefill (heat-recovery): needs bod.heat_recovery"
