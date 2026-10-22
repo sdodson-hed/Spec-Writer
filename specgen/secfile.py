@@ -301,10 +301,13 @@ def parse_source(
     # The root was appended into prolog by emit() when its open tag was seen
     # (stack was empty and root was None) — pull it out.
     prolog = [node for node in prolog if node is not root]
-    # a byte windows-1252 leaves undefined is kept as-is and reported (it is
-    # a corrupt character, e.g. "off\x81-site" in 02 83 00)
+    # corrupt characters are kept as-is and reported: a byte windows-1252
+    # leaves undefined ("off\x81-site" in 02 83 00), or a control character
+    # XML forbids ("Dental Surgical Vacuum\x13" in 22 60 70)
     for m in _UNDEFINED_RE.finditer(source):
         defects.append({"type": "undefined-byte", "raw": m.group(), "offset": m.start()})
+    for m in _CONTROL_RE.finditer(source):
+        defects.append({"type": "control-character", "raw": m.group(), "offset": m.start()})
     defects.sort(key=lambda d: d["offset"])
     return SecFile(
         path=path, source=source, prolog=prolog, root=root, epilog=epilog,
@@ -313,3 +316,5 @@ def parse_source(
 
 
 _UNDEFINED_RE = re.compile("[" + "".join(chr(b) for b in UNDEFINED_BYTES) + "]")
+# C0 controls XML 1.0 forbids: all but tab, LF and CR
+_CONTROL_RE = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f]")

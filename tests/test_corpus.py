@@ -19,7 +19,10 @@ FILES = (
 
 # Masters with a known source defect, parsed in tolerant mode. A defect in
 # any other master fails until someone has looked at it.
-KNOWN_DEFECTS = {"01 42 00"}  # NORSOK entry: stray </URL> (UMRL July 2026)
+KNOWN_DEFECTS = {
+    "01 42 00",  # NORSOK entry: stray </URL> (UMRL July 2026)
+    "22 60 70",  # "Dental Surgical Vacuum\x13": a control character XML forbids
+}
 
 pytestmark = pytest.mark.skipif(not FILES, reason="corpus not present")
 

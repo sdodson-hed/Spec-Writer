@@ -226,7 +226,7 @@ def cmd_audit(args) -> int:
         return 1
     if report["defects"]:
         print(f"SOURCE DEFECT: {len(report['defects'])} defect(s) in the master "
-              "(stray tag or undefined byte), kept as-is; not a clean pass")
+              "(stray tag or corrupt character), kept as-is; not a clean pass")
         return 2
     print("OK: every decision signal attributed")
     return 0

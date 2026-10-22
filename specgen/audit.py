@@ -106,8 +106,8 @@ def audit_source(src: str, root: Element, defects=()) -> dict:
 
 
 def printable(s: str) -> str:
-    """For console output: a control character (an undefined-byte defect)
-    prints escaped, e.g. \\x81, instead of invisibly."""
+    """For console output: a control character (an undefined-byte or
+    control-character defect) prints escaped, e.g. \\x81, instead of invisibly."""
     return "".join(c if c.isprintable() else repr(c)[1:-1] for c in s)
 
 
