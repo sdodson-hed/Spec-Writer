@@ -15,6 +15,7 @@ and an unresolved-decisions report for engineer review.
 
 from __future__ import annotations
 
+import difflib
 import json
 import re
 import xml.etree.ElementTree as ET
@@ -920,13 +921,37 @@ def generate(
     for u in unresolved:
         pool.setdefault(_sig(u["options"]), []).append(u)
     final_groups, final_stream, _ = scan_groups(src)
-    unresolved = []
-    for fg in final_groups:
-        if fg.in_note:
+    open_groups = [fg for fg in final_groups if not fg.in_note]
+    origins: dict[int, dict] = {}
+    for i, fg in enumerate(open_groups):
+        bucket = pool.get(_sig([o.text for o in fg.options]))
+        if bucket:
+            origins[i] = bucket.pop(0)
+    # An edit inside a still-open bracket (units or tailoring removed from its
+    # text) changes its options, so the exact match above misses it. Pair it
+    # with a leftover original only when the kind and option count agree and
+    # the text is clearly the closest (>= 0.8 similar, 0.05 ahead of the next
+    # candidate). This names the decision and keeps its note; it applies no
+    # answer. Anything less certain stays OPEN@.
+    leftover = [u for b in pool.values() for u in b]
+    for i, fg in enumerate(open_groups):
+        if i in origins:
             continue
+        text = " | ".join(_sig([o.text for o in fg.options]))
+        scored = sorted(
+            ((difflib.SequenceMatcher(None, " | ".join(_sig(u["options"])), text,
+                                      autojunk=False).ratio(), n, u)
+             for n, u in enumerate(leftover)
+             if u.get("kind") == fg.kind and len(u["options"]) == len(fg.options)),
+            key=lambda t: (-t[0], t[1]),
+        )
+        if scored and scored[0][0] >= 0.8 and (len(scored) == 1 or scored[0][0] - scored[1][0] >= 0.05):
+            origins[i] = scored[0][2]
+            leftover.remove(scored[0][2])
+    unresolved = []
+    for i, fg in enumerate(open_groups):
         opts = [o.text for o in fg.options]
-        bucket = pool.get(_sig(opts))
-        origin = bucket.pop(0) if bucket else None
+        origin = origins.get(i)
         entry = {
             "id": origin["id"] if origin else f"OPEN@{fg.src_start}",
             "kind": fg.kind,

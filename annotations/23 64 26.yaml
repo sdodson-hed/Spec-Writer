@@ -1,0 +1,58 @@
+# UFGS 23 64 26 CHILLED, CHILLED-HOT, AND CONDENSER WATER PIPING SYSTEMS
+# (November 2025)
+#
+# A piping section for the whole project, so the chiller schedule alone
+# decides nothing here: a project can have a cooling tower or water-cooled
+# equipment that is not on the chiller schedule. Every rule needs an explicit
+# basis-of-design fact, and stays open with a "needs bod.<field>" note until
+# the project records it:
+#
+#   bod.condenser_water  true if the project has a condenser water system
+#                        (cooling tower or water-cooled equipment)
+#   bod.glycol           true if the chilled water needs freeze protection
+#
+# Agency tailoring and units come from the project, as for every section.
+#
+# Not here, by design: pipe materials, valves, pumps and accessories (the
+# engineer's choices), and the "[ chilled water,][ chilled-hot water,][ and]
+# [ condenser water piping system[s]]" list in 3.7, which also needs to know
+# whether there is chilled-hot water.
+# Check after every UFGS release:
+#   python -m specgen annotate-check "masters/23 64 26.SEC" --annotation "annotations/23 64 26.yaml"
+
+section: "23 64 26"
+applies_to:
+  schedule: air_cooled_chiller
+
+rules:
+  # --- condenser water: only with a cooling tower or water-cooled equipment -----
+  - id: condenser-water-treatment
+    # 2.11.6 is the whole content of an optional bracket (one decision)
+    target: {path: "PART 2/WATER TREATMENT SYSTEMS/CONDENSER WATER", kind: spt}
+    remove_unless: {bod: {condenser_water: true}}
+    requires: [bod.condenser_water]
+
+  - id: condenser-water-tests
+    target: {path: "PART 3/FIELD TESTS/CONDENSER WATER QUALITY TEST REPORTS", kind: spt}
+    remove_unless: {bod: {condenser_water: true}}
+    requires: [bod.condenser_water]
+
+  - id: cooling-water-inspection
+    # 3.8, also an optional bracket; its note: include it with a cooling tower
+    # or water-cooled equipment
+    target: {path: "PART 3/ONE-YEAR INSPECTION REPORT FOR COOLING WATER", kind: spt}
+    remove_unless: {bod: {condenser_water: true}}
+    requires: [bod.condenser_water]
+
+  - id: cooling-water-inspection-submittal
+    # its submittal item is bracketed, so removal cleanup leaves it alone
+    target: {path: "PART 1/SUBMITTALS", kind: optional,
+             options: ["One-Year Inspection Report For Cooling Water; G, [_____]"]}
+    remove_unless: {bod: {condenser_water: true}}
+    requires: [bod.condenser_water]
+
+  # --- 2.11.3 glycol: freeze protection is a basis-of-design call ----------------
+  - id: glycol
+    target: {path: "PART 2/WATER TREATMENT SYSTEMS/GLYCOL SOLUTION", kind: spt}
+    remove_unless: {bod: {glycol: true}}
+    requires: [bod.glycol]
