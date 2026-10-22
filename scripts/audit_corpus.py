@@ -5,8 +5,8 @@ Usage: python scripts/audit_corpus.py [corpus_dir]
 The corpus is the argument, else $SPECGEN_CORPUS, else masters/Specifications.
 Searches recursively for .SEC/.sec (WBDG ships lowercase, one folder per
 division). Parses in tolerant mode: a master with a source defect (a stray
-close tag, or a byte windows-1252 leaves undefined) prints DEFECT and is
-counted separately, not as a clean pass.
+close tag, a byte windows-1252 leaves undefined, or a control character XML
+forbids) prints DEFECT and is counted separately, not as a clean pass.
 Exits 1 on any round-trip failure, unattributed signal, parse error, or an
 empty corpus.
 """
