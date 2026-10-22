@@ -73,7 +73,7 @@ Then, in SpecsIntact 5.7:
 5. Process > Export Submittal Register, comma-delimited, to the job's `Exports` folder.
 6. Repeat step 2 with `23_64_10.revisions.sec` and open it.
 
-Answer No if SpecsIntact offers newer UMRL/UMSL lists during the test, so its checks run against the same reference list the section cites.
+Check which reference list SpecsIntact has first (`%APPDATA%\SpecsIntact\umrl\locUMRLDate.txt`). Run the reference checks against the list the section cites ("References are in agreement with UMRL dated ..."), taking SpecsIntact's offer to download a newer one if needed. It keeps the old files as `umrlOld.ref` and `umslold.lst`.
 
 ### Results, 2026-10-22 (SpecsIntact 5.7.0.248, UFGS Aug 2026)
 
@@ -87,6 +87,7 @@ Answer No if SpecsIntact offers newer UMRL/UMSL lists during the test, so its ch
 | Reference Verification Report and Reference Title Report: "ALL REFERENCES HAVE BEEN VERIFIED" | Pass; reconciling left the file byte-identical |
 | Remove unused references removes nothing | Pass; file byte-identical |
 | Control: our file plus AHRI 450 (unused) | SpecsIntact removed exactly AHRI 450; the result is byte-identical to ours, so its cleanup and ours agree byte for byte |
+| The same reference checks after updating SpecsIntact's lists from UMRL 2025.10.15 to 2026.07.15, the list the section cites | Pass; file byte-identical. All 14 listed references match the new list's titles and dates (12 of 14 matched the old one) |
 | Submittal register: 22 items for 23 64 10, each mapped to a paragraph | Pass. Against the master's 25: Centrifugal and Split-System removed by cleanup, Posted Instructions and the ", [_____]" reviewer blanks were Army tailoring |
 | `23_64_10.revisions.sec` opens; deletions show red strikethrough and the navigator labels removed subsections "(DELETED)" | Pass |
 
