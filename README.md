@@ -29,6 +29,13 @@ tailoring option, submittal, and reference a section demands of a specifier.
   tailoring removed, IP units), and `generate` leaves 80 decisions for the
   engineer (102 before, with 8 hand-picked answers), checked against the
   spec's table by `tests/test_maxwell.py`.
+- 23 64 26 (chilled, chilled-hot and condenser water piping) has an
+  annotation too (`annotations/23 64 26.yaml`, 5 rules). A piping section
+  serves the whole project, so its rules wait for explicit basis-of-design
+  facts (`bod.condenser_water`, `bod.glycol`) rather than inferring them from
+  the chiller schedule. With Maxwell's empty `bod` they stay open with that
+  reason; recorded false, they remove condenser water treatment, its tests
+  and one-year inspection, and glycol (`tests/test_maxwell_23_64_26.py`).
 - Additive bracket lists: choice groups that are select-any lists
   ("[ single pole][, double pole][, and four-way]") render as checkboxes;
   connector-only spans ("[ or ]") are joiners, never options; kept items
