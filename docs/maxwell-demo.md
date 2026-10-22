@@ -90,6 +90,7 @@ Check which reference list SpecsIntact has first (`%APPDATA%\SpecsIntact\umrl\lo
 | The same reference checks after updating SpecsIntact's lists from UMRL 2025.10.15 to 2026.07.15, the list the section cites | Pass; file byte-identical. All 14 listed references match the new list's titles and dates (12 of 14 matched the old one) |
 | Submittal register: 22 items for 23 64 10, each mapped to a paragraph | Pass. Against the master's 25: Centrifugal and Split-System removed by cleanup, Posted Instructions and the ", [_____]" reviewer blanks were Army tailoring |
 | `23_64_10.revisions.sec` opens; deletions show red strikethrough and the navigator labels removed subsections "(DELETED)" | Pass |
+| Open, save without edits, close | Harmless. SpecsIntact re-wraps lines and restyles the title-block table (adds a style, narrows its two columns from 366 to 225); with those set aside the file is identical to ours. Our parser reads the saved file and round-trips it with no defects |
 
 Notes from the run:
 
