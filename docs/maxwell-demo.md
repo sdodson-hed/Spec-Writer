@@ -64,22 +64,35 @@ Test SpecsIntact against its own release. The copy of 23 64 10 in SpecsIntact's 
 python scripts/maxwell_demo.py --master "%USERPROFILE%\Documents\SpecsIntactWD\Masters\UFGS\23 64 10.SEC" --out out/maxwell-demo-si
 ```
 
-Then, in SpecsIntact:
+Then, in SpecsIntact 5.7:
 
-1. New Job (for example "Maxwell demo") from the UFGS master, and add section 23 64 10. If it offers tailoring, pick none, because the generated file is already tailored.
-2. Close the section if it is open. Keep a copy of the job's `23 64 10.SEC`, then replace it with `out/maxwell-demo-si/1-prefill/23_64_10.sec`, renamed to `23 64 10.SEC`.
-3. Open the section in SpecsIntact and go through the list below.
-4. Repeat step 2 with `23_64_10.revisions.sec` to check the tracked changes.
+1. New Job from the UFGS master with section 23 64 10. SpecsIntact adds 01 33 00 and 01 42 00 itself. When a section is pulled into a job, SpecsIntact adds table styles and re-wraps reference lines, but it applies no tailoring.
+2. With the editor closed, back up the job's `pulldata\23 64 10.SEC` and replace it with `out/maxwell-demo-si/1-prefill/23_64_10.sec`, keeping SpecsIntact's file name.
+3. Open the section. The Tailoring Options dialog lists AIR FORCE and NAVY, the options on the one shared block that is left. Click OK, and do not save on close.
+4. Process > Reference Processing: Reconcile references, UMRL, run once with Remove unused references off and once with it on. Reports go to `prntdata\REFVER.RPT` and `TTLDIFFS.RPT` and do not open by themselves.
+5. Process > Export Submittal Register, comma-delimited, to the job's `Exports` folder.
+6. Repeat step 2 with `23_64_10.revisions.sec` and open it.
 
-The list:
+Answer No if SpecsIntact offers newer UMRL/UMSL lists during the test, so its checks run against the same reference list the section cites.
 
-- [ ] `23_64_10.sec` opens in SpecsIntact without errors or repair prompts.
-- [ ] The tailored text reads correctly in 2.4.1 (Scroll), the compressor driver line (electric motor) and the condenser line (air-cooled condenser coil).
-- [ ] The 7 removed subsections are gone, and the section's numbering and outline look right.
-- [ ] Submittal verification passes, with no items pointing at removed subsections.
-- [ ] Reference verification passes. The 12 removed references were only cited inside removed subsections.
-- [ ] Only Air Force tailoring remains, and units are IP only.
-- [ ] `23_64_10.revisions.sec` opens with the changes as tracked changes, red for deletions and green for insertions, and accepting all of them gives the same text as `23_64_10.sec`.
-- [ ] Open bracket decisions (for example the condenser accessories list after the condenser line) still show as brackets for the engineer.
+### Results, 2026-10-22 (SpecsIntact 5.7.0.248, UFGS Aug 2026)
 
-Note anything SpecsIntact flags with its message and the paragraph number. Each one becomes a fix or a known limit.
+| Check | Result |
+|---|---|
+| `23_64_10.sec` opens without errors or repair prompts | Pass |
+| 2.4.1 and the submittal list say Scroll; driver line electric motor; condenser line air-cooled condenser coil | Pass |
+| Removed subsections gone, numbering closes up (old 2.5 Split-System gone, 2.5 is Chiller Components) | Pass |
+| Only the shared Air Force/Navy block remains (Tailoring Options lists no ARMY) | Pass |
+| Open decisions (heat recovery condenser, receiver, economizer; field acceptance test plan) stay bracketed | Pass |
+| Reference Verification Report and Reference Title Report: "ALL REFERENCES HAVE BEEN VERIFIED" | Pass; reconciling left the file byte-identical |
+| Remove unused references removes nothing | Pass; file byte-identical |
+| Control: our file plus AHRI 450 (unused) | SpecsIntact removed exactly AHRI 450; the result is byte-identical to ours, so its cleanup and ours agree byte for byte |
+| Submittal register: 22 items for 23 64 10, each mapped to a paragraph | Pass. Against the master's 25: Centrifugal and Split-System removed by cleanup, Posted Instructions and the ", [_____]" reviewer blanks were Army tailoring |
+| `23_64_10.revisions.sec` opens; deletions show red strikethrough and the navigator labels removed subsections "(DELETED)" | Pass |
+
+Notes from the run:
+
+- Choices produce deletions only. Picking "Scroll" deletes the brackets and the other options, and the kept word stays plain. Green insertions appear only for filled blanks and hand edits, which this demo has none of.
+- The editor has no accept-all command that we found. `generate` already accepts every change itself and checks that the result equals `23_64_10.sec` before writing either file.
+- In revision view a deleted subsection keeps its number, so 2.4.2 appears twice (the deleted Centrifugal and the next one).
+- The editor display hid SI values in designer notes ("500 tons" only). The file still has "1760 kW"; we never edit notes.
