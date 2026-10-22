@@ -179,7 +179,12 @@ the pure-Python build.
 
 Demo: `python scripts/maxwell_demo.py` runs `prefill` on 23 64 10 with
 `projects/maxwell/design-data.json` and `annotations/23 64 10.yaml`, then
-`generate --strict --revisions`, into `out/maxwell-demo/`. Nothing is
+`generate --strict --revisions`, into `out/maxwell-demo/1-prefill/`. A second
+scenario, `2-schedule-revision/`, re-runs prefill after a scripted engineer
+review and a schedule change, which leaves one conflict. Open
+`out/maxwell-demo/index.html`; the walkthrough is `docs/maxwell-demo.md`.
+`python -m specgen html ... --answers <file>` builds a decision page that
+opens with those answers loaded. Nothing in the first scenario is
 hand-coded. The ACC-1 schedule removes the 7 subsections it rules out
 (centrifugal, split-system, screw and centrifugal compressors, gas-engine
 driver, water-cooled condenser coil, cooling tower) and picks scroll,
