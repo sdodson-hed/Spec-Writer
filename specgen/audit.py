@@ -105,6 +105,12 @@ def audit_source(src: str, root: Element, defects=()) -> dict:
     return {"signals": signals, "unknowns": unknowns, "defects": reported}
 
 
+def printable(s: str) -> str:
+    """For console output: a control character (an undefined-byte defect)
+    prints escaped, e.g. \\x81, instead of invisibly."""
+    return "".join(c if c.isprintable() else repr(c)[1:-1] for c in s)
+
+
 def audit_file(path, tolerant: bool = True) -> dict:
     from . import secfile
 

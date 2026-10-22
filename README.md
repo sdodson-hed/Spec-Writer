@@ -12,6 +12,10 @@ tailoring option, submittal, and reference a section demands of a specifier.
   31 33, UMRL July 2026); 430 audit clean. 01 42 00 ships a stray `</URL>`
   in its NORSOK entry: tolerant mode keeps it as raw text and `audit`
   reports it as a source defect (exit 2), not a pass.
+  SpecsIntact's own UFGS library (682 sections, July 2026) also round-trips
+  completely. 02 83 00 there has a corrupt byte ("off\x81-site"): the five
+  bytes windows-1252 leaves undefined are read the way Windows reads them,
+  kept byte for byte, and reported as source defects.
   The earlier 56-master corpus (55 Division 23 + 26 20 00, UMRL April 2026)
   is in `masters/Specifications` on the shared drive.
 - Stable anchors: answers are keyed by `<path>#<kind>:<hash8>[~n]`, not by

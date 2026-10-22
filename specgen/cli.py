@@ -225,16 +225,19 @@ def cmd_audit(args) -> int:
         print(f"FAIL: {len(report['unknowns'])} unattributed signal(s)")
         return 1
     if report["defects"]:
-        print(f"SOURCE DEFECT: {len(report['defects'])} malformed tag(s) in the "
-              "master, kept as-is; not a clean pass")
+        print(f"SOURCE DEFECT: {len(report['defects'])} defect(s) in the master "
+              "(stray tag or undefined byte), kept as-is; not a clean pass")
         return 2
     print("OK: every decision signal attributed")
     return 0
 
 
 def _print_defects(report, prefix: str = "DEFECT") -> None:
+    from .audit import printable
+
     for d in report.get("defects", []):
-        print(f"{prefix} {d['type']} {d['raw']} @ {d['offset']}: {d['context']}")
+        raw = d["raw"] if d["raw"].isprintable() else repr(d["raw"])
+        print(f"{prefix} {d['type']} {raw} @ {d['offset']}: {printable(d['context'])}")
 
 
 def cmd_annotate_check(args) -> int:
